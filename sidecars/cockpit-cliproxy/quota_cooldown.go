@@ -17,9 +17,10 @@ import (
 // The host sends only confirmed quota observations. This state is independent
 // of retryable auth/model errors, so ResetAuthState cannot remove the guard.
 type quotaCooldownState struct {
-	Exhausted   bool   `json:"exhausted"`
-	ResetAtMS   *int64 `json:"resetAtMs"`
-	UpdatedAtMS int64  `json:"updatedAtMs"`
+	Exhausted      bool   `json:"exhausted"`
+	ResetAtMS      *int64 `json:"resetAtMs"`
+	UpdatedAtMS    int64  `json:"updatedAtMs"`
+	QuotaResetAtMS *int64 `json:"quotaResetAtMs,omitempty"`
 }
 
 func (s quotaCooldownState) active(now time.Time) bool {
@@ -39,11 +40,16 @@ func newQuotaCooldownStateStore(path string, m *manifest) *quotaCooldownStateSto
 	initial := make(map[string]quotaCooldownState)
 	if m != nil {
 		for _, account := range m.Accounts {
+			state := quotaCooldownState{}
 			if account.QuotaCooldown != nil {
-				initial[account.ID] = *account.QuotaCooldown
+				state = *account.QuotaCooldown
 			} else if account.RemainingQuota != nil {
-				initial[account.ID] = quotaCooldownState{Exhausted: *account.RemainingQuota == 0}
+				state.Exhausted = *account.RemainingQuota == 0
 			}
+			if account.QuotaResetAtMS != nil {
+				state.QuotaResetAtMS = account.QuotaResetAtMS
+			}
+			initial[account.ID] = state
 		}
 	}
 	s.snapshot.Store(initial)
@@ -75,7 +81,12 @@ func (s *quotaCooldownStateStore) load() error {
 			cooldown = legacyQuotaCooldownFromPoolState(account)
 		}
 		if cooldown != nil {
-			next[id] = *cooldown
+			item := *cooldown
+			if account.Primary != nil && account.Primary.ResetAt != nil && *account.Primary.ResetAt > 0 {
+				ms := *account.Primary.ResetAt * 1000
+				item.QuotaResetAtMS = &ms
+			}
+			next[id] = item
 		}
 	}
 	if previous, ok := s.snapshot.Load().(map[string]quotaCooldownState); ok {
@@ -366,4 +377,32 @@ func poolMemberRecoverableReason(code string) bool {
 	default:
 		return true
 	}
+}
+
+func accountQuotaResetAtMS(m *manifest, account *accountSpec) *int64 {
+	if account == nil {
+		return nil
+	}
+	if m != nil && m.quotaCooldowns != nil {
+		if snapshot, ok := m.quotaCooldowns.snapshot.Load().(map[string]quotaCooldownState); ok {
+			if state, exists := snapshot[account.ID]; exists && state.QuotaResetAtMS != nil {
+				return state.QuotaResetAtMS
+			}
+		}
+	}
+	return account.QuotaResetAtMS
+}
+
+func isFreeAccount(account *accountSpec) bool {
+	if account == nil {
+		return false
+	}
+	plan := strings.ToLower(strings.TrimSpace(account.PlanType))
+	if plan == "free" || strings.Contains(plan, "free") {
+		return true
+	}
+	if account.PlanRank != nil && *account.PlanRank <= 100 {
+		return true
+	}
+	return false
 }

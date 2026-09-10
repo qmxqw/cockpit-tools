@@ -926,23 +926,46 @@ func (s *cockpitSelector) orderAuths(auths []*coreauth.Auth, start int) []*corea
 	sort.SliceStable(out, func(i, j int) bool {
 		left := s.accountForAuth(out[i])
 		right := s.accountForAuth(out[j])
-		if compareAccountSpecs(left, right, strategy) != 0 {
-			return compareAccountSpecs(left, right, strategy) < 0
+		if compareAccountSpecsWithManifest(s.manifest, left, right, strategy) != 0 {
+			return compareAccountSpecsWithManifest(s.manifest, left, right, strategy) < 0
 		}
 		return s.rotatedIndex(left, start) < s.rotatedIndex(right, start)
 	})
 	return out
 }
 
+func accountEffectiveExpiryMS(m *manifest, account *accountSpec) *int64 {
+	if account == nil {
+		return nil
+	}
+	if isFreeAccount(account) {
+		return accountQuotaResetAtMS(m, account)
+	}
+	if account.SubscriptionExpiryMS != nil {
+		return account.SubscriptionExpiryMS
+	}
+	return accountQuotaResetAtMS(m, account)
+}
+
 func compareAccountSpecs(left, right *accountSpec, strategy string) int {
+	return compareAccountSpecsWithManifest(nil, left, right, strategy)
+}
+
+func compareAccountSpecsWithManifest(m *manifest, left, right *accountSpec, strategy string) int {
 	switch strategy {
 	case "quota_high_first":
 		if cmp := compareIntPtrDesc(valueInt(left, "quota"), valueInt(right, "quota")); cmp != 0 {
 			return cmp
 		}
+		if cmp := compareInt64PtrAsc(accountQuotaResetAtMS(m, left), accountQuotaResetAtMS(m, right)); cmp != 0 {
+			return cmp
+		}
 		return compareIntPtrDesc(valueInt(left, "plan"), valueInt(right, "plan"))
 	case "quota_low_first":
 		if cmp := compareIntPtrAsc(valueInt(left, "quota"), valueInt(right, "quota")); cmp != 0 {
+			return cmp
+		}
+		if cmp := compareInt64PtrAsc(accountQuotaResetAtMS(m, left), accountQuotaResetAtMS(m, right)); cmp != 0 {
 			return cmp
 		}
 		return compareIntPtrDesc(valueInt(left, "plan"), valueInt(right, "plan"))
@@ -952,7 +975,9 @@ func compareAccountSpecs(left, right *accountSpec, strategy string) int {
 		}
 		return compareIntPtrDesc(valueInt(left, "quota"), valueInt(right, "quota"))
 	case "expiry_soon_first":
-		if cmp := compareInt64PtrAsc(valueInt64(left), valueInt64(right)); cmp != 0 {
+		leftExpiry := accountEffectiveExpiryMS(m, left)
+		rightExpiry := accountEffectiveExpiryMS(m, right)
+		if cmp := compareInt64PtrAsc(leftExpiry, rightExpiry); cmp != 0 {
 			return cmp
 		}
 		if cmp := compareIntPtrDesc(valueInt(left, "plan"), valueInt(right, "plan")); cmp != 0 {

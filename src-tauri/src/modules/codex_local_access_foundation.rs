@@ -822,6 +822,8 @@ struct RoutingCandidate {
     plan_rank: Option<i32>,
     remaining_quota: Option<i32>,
     subscription_expiry_ms: Option<i64>,
+    quota_reset_at_ms: Option<i64>,
+    is_free_plan: bool,
 }
 
 fn gateway_runtime() -> &'static TokioMutex<GatewayRuntime> {

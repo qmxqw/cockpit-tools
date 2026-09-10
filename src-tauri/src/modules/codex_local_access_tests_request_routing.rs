@@ -367,36 +367,48 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 plan_rank: Some(500),
                 remaining_quota: Some(80),
                 subscription_expiry_ms: None,
+                quota_reset_at_ms: None,
+                is_free_plan: false,
             },
             RoutingCandidate {
                 account_id: "acc-plus".to_string(),
                 plan_rank: Some(300),
                 remaining_quota: Some(40),
                 subscription_expiry_ms: None,
+                quota_reset_at_ms: None,
+                is_free_plan: false,
             },
             RoutingCandidate {
                 account_id: "acc-team".to_string(),
                 plan_rank: Some(300),
                 remaining_quota: Some(70),
                 subscription_expiry_ms: None,
+                quota_reset_at_ms: None,
+                is_free_plan: false,
             },
             RoutingCandidate {
                 account_id: "acc-business".to_string(),
                 plan_rank: Some(300),
                 remaining_quota: Some(60),
                 subscription_expiry_ms: None,
+                quota_reset_at_ms: None,
+                is_free_plan: false,
             },
             RoutingCandidate {
                 account_id: "acc-promax".to_string(),
                 plan_rank: Some(600),
                 remaining_quota: Some(90),
                 subscription_expiry_ms: None,
+                quota_reset_at_ms: None,
+                is_free_plan: false,
             },
             RoutingCandidate {
                 account_id: "acc-edu".to_string(),
                 plan_rank: Some(700),
                 remaining_quota: Some(100),
                 subscription_expiry_ms: None,
+                quota_reset_at_ms: None,
+                is_free_plan: false,
             },
         ];
         let original_index = candidates
@@ -429,6 +441,94 @@ data: {"type":"response.completed","response":{"id":"resp_123","usage":{"input_t
                 "acc-promax",
                 "acc-edu",
             ]
+        );
+    }
+
+    #[test]
+    fn expiry_soon_first_prefers_earlier_quota_reset_for_free_accounts() {
+        let mut candidates = vec![
+            RoutingCandidate {
+                account_id: "alfarobison06@gmail.com".to_string(),
+                plan_rank: Some(100),
+                remaining_quota: Some(100),
+                subscription_expiry_ms: None,
+                quota_reset_at_ms: Some(1790985618000), // 10/03 08:00
+                is_free_plan: true,
+            },
+            RoutingCandidate {
+                account_id: "southamt.su@gmail.com".to_string(),
+                plan_rank: Some(100),
+                remaining_quota: Some(99),
+                subscription_expiry_ms: None,
+                quota_reset_at_ms: Some(1790904623000), // 10/02 09:30
+                is_free_plan: true,
+            },
+        ];
+        let original_index = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| (candidate.account_id.clone(), index))
+            .collect::<HashMap<_, _>>();
+
+        candidates.sort_by(|left, right| {
+            compare_routing_candidates(
+                left,
+                right,
+                CodexLocalAccessRoutingStrategy::ExpirySoonFirst,
+                &original_index,
+            )
+        });
+
+        assert_eq!(
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.account_id)
+                .collect::<Vec<_>>(),
+            vec!["southamt.su@gmail.com", "alfarobison06@gmail.com"]
+        );
+    }
+
+    #[test]
+    fn quota_low_first_prefers_earlier_quota_reset_on_equal_quota() {
+        let mut candidates = vec![
+            RoutingCandidate {
+                account_id: "alfarobison06@gmail.com".to_string(),
+                plan_rank: Some(100),
+                remaining_quota: Some(99),
+                subscription_expiry_ms: None,
+                quota_reset_at_ms: Some(1790985618000), // 10/03 08:00
+                is_free_plan: true,
+            },
+            RoutingCandidate {
+                account_id: "southamt.su@gmail.com".to_string(),
+                plan_rank: Some(100),
+                remaining_quota: Some(99),
+                subscription_expiry_ms: None,
+                quota_reset_at_ms: Some(1790904623000), // 10/02 09:30
+                is_free_plan: true,
+            },
+        ];
+        let original_index = candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| (candidate.account_id.clone(), index))
+            .collect::<HashMap<_, _>>();
+
+        candidates.sort_by(|left, right| {
+            compare_routing_candidates(
+                left,
+                right,
+                CodexLocalAccessRoutingStrategy::QuotaLowFirst,
+                &original_index,
+            )
+        });
+
+        assert_eq!(
+            candidates
+                .into_iter()
+                .map(|candidate| candidate.account_id)
+                .collect::<Vec<_>>(),
+            vec!["southamt.su@gmail.com", "alfarobison06@gmail.com"]
         );
     }
 

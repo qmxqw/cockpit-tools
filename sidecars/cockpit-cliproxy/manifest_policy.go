@@ -344,6 +344,7 @@ type accountSpec struct {
 	RemainingQuota        *int                `json:"remainingQuota,omitempty"`
 	QuotaCooldown         *quotaCooldownState `json:"quotaCooldown,omitempty"`
 	SubscriptionExpiryMS  *int64              `json:"subscriptionExpiryMs,omitempty"`
+	QuotaResetAtMS        *int64              `json:"quotaResetAtMs,omitempty"`
 	GPTReserveAllowed     bool                `json:"gptReserveAllowed,omitempty"`
 	ImageGenerationPolicy string              `json:"imageGenerationPolicy,omitempty"`
 	QuotaReserve          *quotaReserveSpec   `json:"quotaReserve,omitempty"`

@@ -150,6 +150,15 @@ fn resolve_subscription_expiry_ms(account: &CodexAccount) -> Option<i64> {
         .map(|parsed| parsed.timestamp_millis())
 }
 
+fn resolve_quota_reset_at_ms(account: &CodexAccount) -> Option<i64> {
+    account
+        .quota
+        .as_ref()
+        .and_then(|q| q.hourly_reset_time)
+        .filter(|&t| t > 0)
+        .map(|sec| sec * 1000)
+}
+
 fn build_routing_candidates(ordered_account_ids: &[String]) -> Vec<RoutingCandidate> {
     ordered_account_ids
         .iter()
@@ -161,6 +170,11 @@ fn build_routing_candidates(ordered_account_ids: &[String]) -> Vec<RoutingCandid
                 plan_rank: account.as_ref().and_then(resolve_plan_rank),
                 remaining_quota: account.as_ref().and_then(resolve_remaining_quota),
                 subscription_expiry_ms: account.as_ref().and_then(resolve_subscription_expiry_ms),
+                quota_reset_at_ms: account.as_ref().and_then(resolve_quota_reset_at_ms),
+                is_free_plan: account
+                    .as_ref()
+                    .map(|a| normalize_plan_key(a.plan_type.as_deref()) == "free")
+                    .unwrap_or(true),
             }
         })
         .collect()
@@ -202,10 +216,12 @@ fn compare_routing_candidates(
         CodexLocalAccessRoutingStrategy::SingleAccount => Ordering::Equal,
         CodexLocalAccessRoutingStrategy::QuotaHighFirst => {
             compare_option_desc(left.remaining_quota, right.remaining_quota)
+                .then_with(|| compare_option_i64_asc(left.quota_reset_at_ms, right.quota_reset_at_ms))
                 .then_with(|| compare_option_desc(left.plan_rank, right.plan_rank))
         }
         CodexLocalAccessRoutingStrategy::QuotaLowFirst => {
             compare_option_asc(left.remaining_quota, right.remaining_quota)
+                .then_with(|| compare_option_i64_asc(left.quota_reset_at_ms, right.quota_reset_at_ms))
                 .then_with(|| compare_option_desc(left.plan_rank, right.plan_rank))
         }
         CodexLocalAccessRoutingStrategy::PlanHighFirst => {
@@ -217,7 +233,17 @@ fn compare_routing_candidates(
                 .then_with(|| compare_option_desc(left.remaining_quota, right.remaining_quota))
         }
         CodexLocalAccessRoutingStrategy::ExpirySoonFirst => {
-            compare_option_i64_asc(left.subscription_expiry_ms, right.subscription_expiry_ms)
+            let left_expiry = if left.is_free_plan || left.subscription_expiry_ms.is_none() {
+                left.quota_reset_at_ms
+            } else {
+                left.subscription_expiry_ms
+            };
+            let right_expiry = if right.is_free_plan || right.subscription_expiry_ms.is_none() {
+                right.quota_reset_at_ms
+            } else {
+                right.subscription_expiry_ms
+            };
+            compare_option_i64_asc(left_expiry, right_expiry)
                 .then_with(|| compare_option_desc(left.plan_rank, right.plan_rank))
                 .then_with(|| compare_option_desc(left.remaining_quota, right.remaining_quota))
         }

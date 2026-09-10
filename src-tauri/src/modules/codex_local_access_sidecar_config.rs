@@ -1512,6 +1512,7 @@ fn sidecar_account_manifest_value(
         "remainingQuota": resolve_remaining_quota(account),
         "quotaCooldown": account_quota_cooldown(account, now_ms()),
         "subscriptionExpiryMs": resolve_subscription_expiry_ms(account),
+        "quotaResetAtMs": resolve_quota_reset_at_ms(account),
         "gptReserveAllowed": account_has_gpt_reserve_entitlement(account),
         "imageGenerationPolicy": match collection.image_generation_account_policies.get(&account.id) {
             Some(CodexLocalAccessImageGenerationPolicy::Enabled) => "enabled",

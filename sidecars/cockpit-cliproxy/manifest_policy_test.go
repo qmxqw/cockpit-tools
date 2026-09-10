@@ -3066,3 +3066,104 @@ func TestCockpitSelectorSkipsExhaustedQuotaForRegularModels(t *testing.T) {
 		t.Fatalf("reserve model should keep its independent quota path: selected=%v err=%v", selected, err)
 	}
 }
+
+func TestCockpitSelectorExpirySoonFirstPrefersEarlierResetForFreeAccounts(t *testing.T) {
+	resetA := int64(1790985618000) // later (10/03 08:00)
+	resetB := int64(1790904623000) // earlier (10/02 09:30)
+	quotaA := 100
+	quotaB := 99
+	planRank := 100
+
+	accA := &accountSpec{
+		ID:             "acc-a",
+		Email:          "alfarobison06@gmail.com",
+		PlanType:       "free",
+		PlanRank:       &planRank,
+		RemainingQuota: &quotaA,
+		QuotaResetAtMS: &resetA,
+	}
+	accB := &accountSpec{
+		ID:             "acc-b",
+		Email:          "southamt.su@gmail.com",
+		PlanType:       "free",
+		PlanRank:       &planRank,
+		RemainingQuota: &quotaB,
+		QuotaResetAtMS: &resetB,
+	}
+
+	authA := &coreauth.Auth{ID: "auth-a", Provider: "codex"}
+	authB := &coreauth.Auth{ID: "auth-b", Provider: "codex"}
+
+	m := &manifest{
+		RoutingStrategy: "expiry_soon_first",
+		Accounts:        []accountSpec{*accA, *accB},
+		accountByAuthID: map[string]*accountSpec{
+			"auth-a": accA,
+			"auth-b": accB,
+		},
+		originalIndexByID: map[string]int{
+			"acc-a": 0,
+			"acc-b": 1,
+		},
+	}
+
+	selector := &cockpitSelector{manifest: m}
+	ordered := selector.orderAuths([]*coreauth.Auth{authA, authB}, 0)
+	if len(ordered) != 2 {
+		t.Fatalf("expected 2 ordered auths, got %d", len(ordered))
+	}
+	if ordered[0] != authB {
+		t.Fatalf("expected earlier reset account authB (southamt.su) to be chosen first, got %v", ordered[0].ID)
+	}
+}
+
+func TestCockpitSelectorQuotaLowFirstPrefersEarlierResetOnEqualQuota(t *testing.T) {
+	resetA := int64(1790985618000) // later (10/03 08:00)
+	resetB := int64(1790904623000) // earlier (10/02 09:30)
+	quotaA := 99
+	quotaB := 99
+	planRank := 100
+
+	accA := &accountSpec{
+		ID:             "acc-a",
+		Email:          "alfarobison06@gmail.com",
+		PlanType:       "free",
+		PlanRank:       &planRank,
+		RemainingQuota: &quotaA,
+		QuotaResetAtMS: &resetA,
+	}
+	accB := &accountSpec{
+		ID:             "acc-b",
+		Email:          "southamt.su@gmail.com",
+		PlanType:       "free",
+		PlanRank:       &planRank,
+		RemainingQuota: &quotaB,
+		QuotaResetAtMS: &resetB,
+	}
+
+	authA := &coreauth.Auth{ID: "auth-a", Provider: "codex"}
+	authB := &coreauth.Auth{ID: "auth-b", Provider: "codex"}
+
+	m := &manifest{
+		RoutingStrategy: "quota_low_first",
+		Accounts:        []accountSpec{*accA, *accB},
+		accountByAuthID: map[string]*accountSpec{
+			"auth-a": accA,
+			"auth-b": accB,
+		},
+		originalIndexByID: map[string]int{
+			"acc-a": 0,
+			"acc-b": 1,
+		},
+	}
+
+	selector := &cockpitSelector{manifest: m}
+	ordered := selector.orderAuths([]*coreauth.Auth{authA, authB}, 0)
+	if len(ordered) != 2 {
+		t.Fatalf("expected 2 ordered auths, got %d", len(ordered))
+	}
+	if ordered[0] != authB {
+		t.Fatalf("expected earlier reset account authB (southamt.su) to be chosen first on equal quota, got %v", ordered[0].ID)
+	}
+}
+
