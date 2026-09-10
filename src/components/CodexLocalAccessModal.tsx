@@ -62,6 +62,7 @@ import {
   type CodexQuotaPoolItem,
 } from "../utils/codexQuotaPool";
 import {
+  compareCodexAccountsByRoutingPriority,
   getCodexLocalAccessAccountIneligibleReason,
   isCodexLocalAccessEligibleAccount,
   resolveCodexLocalAccessInitialAccountIds,
@@ -1179,6 +1180,11 @@ export function CodexLocalAccessModal({
 
   const currentMemberStats = useMemo(() => {
     const currentIds = collection?.accountIds ?? [];
+    const customRoutingRules = collection?.customRoutingRules ?? [];
+    const originalIndexById = new Map(
+      currentIds.map((id, index) => [id, index]),
+    );
+
     return currentIds
       .map((accountId) => {
         const account = localAccessAccounts.find(
@@ -1194,12 +1200,22 @@ export function CodexLocalAccessModal({
         };
       })
       .filter((item): item is NonNullable<typeof item> => Boolean(item))
-      .sort((left, right) => {
-        const rightCount = right.stats?.requestCount ?? 0;
-        const leftCount = left.stats?.requestCount ?? 0;
-        return rightCount - leftCount;
-      });
-  }, [collection?.accountIds, localAccessAccounts, t, windowStatsByAccountId]);
+      .sort((left, right) =>
+        compareCodexAccountsByRoutingPriority(left.account, right.account, {
+          strategy: routingStrategy,
+          customRules: customRoutingRules,
+          leftOriginalIndex: originalIndexById.get(left.account.id) ?? 0,
+          rightOriginalIndex: originalIndexById.get(right.account.id) ?? 0,
+        }),
+      );
+  }, [
+    collection?.accountIds,
+    collection?.customRoutingRules,
+    localAccessAccounts,
+    routingStrategy,
+    t,
+    windowStatsByAccountId,
+  ]);
 
   const routingStrategyOptions = useMemo(
     () =>

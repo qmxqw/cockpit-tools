@@ -188,6 +188,16 @@ fn compare_routing_candidates(
 ) -> std::cmp::Ordering {
     use std::cmp::Ordering;
 
+    let left_exhausted = left.remaining_quota == Some(0);
+    let right_exhausted = right.remaining_quota == Some(0);
+    if left_exhausted != right_exhausted {
+        return if left_exhausted {
+            Ordering::Greater
+        } else {
+            Ordering::Less
+        };
+    }
+
     let compare_option_desc = |a: Option<i32>, b: Option<i32>| match (a, b) {
         (Some(left), Some(right)) => right.cmp(&left),
         (Some(_), None) => Ordering::Less,

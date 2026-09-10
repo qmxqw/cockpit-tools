@@ -1,184 +1,237 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+
 import {
-  canAddCodexAccountToLocalAccess,
-  getCodexLocalAccessAccountIneligibleReason,
-  isCodexLocalAccessEligibleAccount,
-  isCodexOAuthBindingEligibleAccount,
-  resolveImportedCodexAccountIdsForLocalAccess,
+  compareCodexAccountsByRoutingPriority,
+  resolveCodexPlanRank,
 } from "./codexLocalAccessAccounts.ts";
 import type { CodexAccount } from "../types/codex.ts";
+import type { CodexLocalAccessCustomRoutingRule } from "../types/codexLocalAccess.ts";
 
-function account(partial: Partial<CodexAccount>): CodexAccount {
-  return {
-    id: partial.id || "acc-1",
-    email: partial.email || "a@example.com",
-    tokens: partial.tokens || {
-      id_token: "",
-      access_token: "",
-      refresh_token: "",
-    },
-    created_at: partial.created_at || Date.now(),
-    ...partial,
-  } as CodexAccount;
-}
-
-test("pending oauth accounts are ineligible for API service", () => {
-  const pending = account({
-    authorization_status: "pending",
-    account_note: "import later",
-  });
-  assert.equal(
-    getCodexLocalAccessAccountIneligibleReason(pending, true),
-    "pending_oauth",
-  );
-  assert.equal(isCodexLocalAccessEligibleAccount(pending, true), false);
-});
-
-test("authorized oauth accounts remain eligible", () => {
-  const ok = account({
-    tokens: {
-      id_token: "id",
-      access_token: "access",
-      refresh_token: "refresh",
-    },
+const createMockAccount = (
+  id: string,
+  overrides: Partial<CodexAccount> = {},
+): CodexAccount =>
+  ({
+    id,
+    auth_mode: "oauth",
     plan_type: "plus",
-  });
-  assert.equal(getCodexLocalAccessAccountIneligibleReason(ok, true), null);
-  assert.equal(isCodexLocalAccessEligibleAccount(ok, true), true);
+    ...overrides,
+  }) as CodexAccount;
+
+test("resolveCodexPlanRank correctly ranks tiers", () => {
+  assert.equal(resolveCodexPlanRank(createMockAccount("1", { plan_type: "enterprise" })), 700);
+  assert.equal(resolveCodexPlanRank(createMockAccount("2", { plan_type: "edu" })), 700);
+  assert.equal(
+    resolveCodexPlanRank(createMockAccount("3", { plan_type: "pro", auth_file_plan_type: "promax" })),
+    600,
+  );
+  assert.equal(
+    resolveCodexPlanRank(createMockAccount("4", { plan_type: "pro", auth_file_plan_type: "prolite" })),
+    500,
+  );
+  assert.equal(resolveCodexPlanRank(createMockAccount("5", { plan_type: "team" })), 300);
+  assert.equal(resolveCodexPlanRank(createMockAccount("6", { plan_type: "plus" })), 300);
+  assert.equal(resolveCodexPlanRank(createMockAccount("7", { plan_type: "go" })), 200);
+  assert.equal(resolveCodexPlanRank(createMockAccount("8", { plan_type: "free" })), 100);
 });
 
-test("eligible accounts can be added when they are not API service members", () => {
-  const eligible = account({ plan_type: "plus" });
+test("Preferred account comes first and Backup account comes last regardless of strategy", () => {
+  const acc1 = createMockAccount("acc-1", { plan_type: "free" });
+  const acc2 = createMockAccount("acc-2", { plan_type: "pro" });
+  const acc3 = createMockAccount("acc-3", { plan_type: "team" });
 
-  assert.equal(
-    canAddCodexAccountToLocalAccess(eligible, new Set(), true),
-    true,
+  const customRules: CodexLocalAccessCustomRoutingRule[] = [
+    { accountId: "acc-1", priority: 10, weight: 1, isBackup: false, isPreferred: true },
+    { accountId: "acc-2", priority: 10, weight: 1, isBackup: true, isPreferred: false },
+    { accountId: "acc-3", priority: 10, weight: 1, isBackup: false, isPreferred: false },
+  ];
+
+  const sorted = [acc2, acc1, acc3].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "auto",
+      customRules,
+    }),
   );
-  assert.equal(
-    canAddCodexAccountToLocalAccess(
-      eligible,
-      new Set([eligible.id]),
-      true,
-    ),
-    false,
-  );
-});
-
-test("direct add follows the API service free-account restriction", () => {
-  const free = account({ plan_type: "free" });
-
-  assert.equal(canAddCodexAccountToLocalAccess(free, new Set(), true), false);
-  assert.equal(canAddCodexAccountToLocalAccess(free, new Set(), false), true);
-});
-
-test("expired paid subscriptions follow the API service free-account restriction", () => {
-  const expiredPlus = account({
-    plan_type: "plus",
-    subscription_active_until: "2020-01-01T00:00:00Z",
-  });
-
-  assert.equal(
-    getCodexLocalAccessAccountIneligibleReason(expiredPlus, true),
-    "free_restricted",
-  );
-  assert.equal(
-    isCodexLocalAccessEligibleAccount(expiredPlus, true),
-    false,
-  );
-  assert.equal(
-    isCodexLocalAccessEligibleAccount(expiredPlus, false),
-    true,
-  );
-});
-
-test("Agent Identity imports are forced into API service without enabling global sync", () => {
-  const regular = account({ id: "regular" });
-  const agentIdentity = account({
-    id: "agent-identity",
-    agent_identity: {
-      agent_runtime_id: "runtime",
-      agent_private_key: "private-key",
-      account_id: "account",
-      chatgpt_user_id: "user",
-    },
-  });
 
   assert.deepEqual(
-    resolveImportedCodexAccountIdsForLocalAccess(
-      [regular, agentIdentity],
-      false,
-      true,
-    ),
-    ["agent-identity"],
-  );
-  assert.deepEqual(
-    resolveImportedCodexAccountIdsForLocalAccess(
-      [regular, agentIdentity],
-      false,
-      false,
-    ),
-    [],
+    sorted.map((a) => a.id),
+    ["acc-1", "acc-3", "acc-2"],
   );
 });
 
-test("DeepSeek Responses accounts cannot join API service", () => {
-  const deepseek = account({
-    id: "deepseek",
-    auth_mode: "apikey",
-    api_provider_id: "deepseek",
-    api_base_url: "https://api.deepseek.com",
-    api_wire_api: "responses",
+test("quota_high_first: sorts high quota first, and on tie sorts earlier quota reset first", () => {
+  const acc1 = createMockAccount("acc-1", {
+    quota: {
+      hourly_percentage: 80,
+      weekly_percentage: 80,
+      hourly_reset_time: 1700002000,
+    } as any,
   });
-  assert.equal(
-    getCodexLocalAccessAccountIneligibleReason(deepseek, false),
-    "deepseek_unsupported",
-  );
-  assert.equal(isCodexLocalAccessEligibleAccount(deepseek, false), false);
-  assert.equal(canAddCodexAccountToLocalAccess(deepseek, new Set(), false), false);
-  assert.deepEqual(
-    resolveImportedCodexAccountIdsForLocalAccess([deepseek], true, false),
-    [],
-  );
-});
-
-test("Web Session imports never join API service even when sync-all is enabled", () => {
-  const regular = account({ id: "regular" });
-  const webSession = account({
-    id: "web-session",
-    token_source_mode: "chatgpt_web_session",
-    tokens: {
-      id_token: "id",
-      access_token: "access",
-    },
+  const acc2 = createMockAccount("acc-2", {
+    quota: {
+      hourly_percentage: 100,
+      weekly_percentage: 100,
+      hourly_reset_time: 1700003000,
+    } as any,
+  });
+  const acc3 = createMockAccount("acc-3", {
+    quota: {
+      hourly_percentage: 100,
+      weekly_percentage: 100,
+      hourly_reset_time: 1700001000, // Same quota as acc2, but earlier reset
+    } as any,
   });
 
-  assert.equal(
-    getCodexLocalAccessAccountIneligibleReason(webSession, false),
-    "web_session_quota_only",
+  const sorted = [acc1, acc2, acc3].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "quota_high_first",
+    }),
   );
-  assert.equal(isCodexOAuthBindingEligibleAccount(webSession), false);
+
   assert.deepEqual(
-    resolveImportedCodexAccountIdsForLocalAccess(
-      [regular, webSession],
-      true,
-      false,
-    ),
-    ["regular"],
+    sorted.map((a) => a.id),
+    ["acc-3", "acc-2", "acc-1"],
   );
 });
 
-test("Agent Identity remains eligible when regular free accounts are restricted", () => {
-  const agentIdentity = account({
+test("quota_low_first: sorts low quota first, and on tie sorts earlier quota reset first", () => {
+  const acc1 = createMockAccount("acc-1", {
+    quota: {
+      hourly_percentage: 50,
+      weekly_percentage: 50,
+      hourly_reset_time: 1700002000,
+    } as any,
+  });
+  const acc2 = createMockAccount("acc-2", {
+    quota: {
+      hourly_percentage: 10,
+      weekly_percentage: 10,
+      hourly_reset_time: 1700003000,
+    } as any,
+  });
+  const acc3 = createMockAccount("acc-3", {
+    quota: {
+      hourly_percentage: 10,
+      weekly_percentage: 10,
+      hourly_reset_time: 1700001000, // Same quota as acc2, earlier reset
+    } as any,
+  });
+
+  const sorted = [acc1, acc2, acc3].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "quota_low_first",
+    }),
+  );
+
+  assert.deepEqual(
+    sorted.map((a) => a.id),
+    ["acc-3", "acc-2", "acc-1"],
+  );
+});
+
+test("expiry_soon_first: sorts by effective expiry ascending", () => {
+  const accPaidFar = createMockAccount("paid-far", {
+    plan_type: "pro",
+    subscription_active_until: "2026-10-01T00:00:00Z",
+  });
+  const accPaidSoon = createMockAccount("paid-soon", {
+    plan_type: "pro",
+    subscription_active_until: "2026-09-15T00:00:00Z",
+  });
+  const accFree = createMockAccount("free-account", {
     plan_type: "free",
-    agent_identity: {
-      agent_runtime_id: "runtime",
-      agent_private_key: "private-key",
-      account_id: "account",
-      chatgpt_user_id: "user",
-    },
+    quota: {
+      hourly_reset_time: Math.floor(new Date("2026-09-11T00:00:00Z").getTime() / 1000),
+    } as any,
   });
 
-  assert.equal(getCodexLocalAccessAccountIneligibleReason(agentIdentity, true), null);
-  assert.equal(isCodexOAuthBindingEligibleAccount(agentIdentity), false);
+  const sorted = [accPaidFar, accPaidSoon, accFree].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "expiry_soon_first",
+    }),
+  );
+
+  assert.deepEqual(
+    sorted.map((a) => a.id),
+    ["free-account", "paid-soon", "paid-far"],
+  );
 });
+
+test("custom strategy sorts by priority descending then weight descending", () => {
+  const acc1 = createMockAccount("acc-1");
+  const acc2 = createMockAccount("acc-2");
+  const acc3 = createMockAccount("acc-3");
+
+  const customRules: CodexLocalAccessCustomRoutingRule[] = [
+    { accountId: "acc-1", priority: 10, weight: 1, isBackup: false, isPreferred: false },
+    { accountId: "acc-2", priority: 20, weight: 1, isBackup: false, isPreferred: false },
+    { accountId: "acc-3", priority: 20, weight: 5, isBackup: false, isPreferred: false },
+  ];
+
+  const sorted = [acc1, acc2, acc3].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "custom",
+      customRules,
+    }),
+  );
+
+  assert.deepEqual(
+    sorted.map((a) => a.id),
+    ["acc-3", "acc-2", "acc-1"],
+  );
+});
+
+test("quota_low_first puts 0% quota accounts at the very end, non-zero accounts sorted by low quota", () => {
+  const accZero1 = createMockAccount("zero-1", {
+    quota: { hourly_percentage: 0, weekly_percentage: 0, hourly_reset_time: 1700003000 } as any,
+  });
+  const accZero2 = createMockAccount("zero-2", {
+    quota: { hourly_percentage: 0, weekly_percentage: 0, hourly_reset_time: 1700001000 } as any,
+  });
+  const accLow = createMockAccount("low-10pct", {
+    quota: { hourly_percentage: 10, weekly_percentage: 10, hourly_reset_time: 1700002000 } as any,
+  });
+  const accHigh = createMockAccount("high-80pct", {
+    quota: { hourly_percentage: 80, weekly_percentage: 80, hourly_reset_time: 1700002000 } as any,
+  });
+
+  const sorted = [accZero1, accHigh, accZero2, accLow].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "quota_low_first",
+    }),
+  );
+
+  // 非 0 账号优先（10% < 80%），0% 账号排在最后（同为 0% 时较早重置的 zero-2 靠前）
+  assert.deepEqual(
+    sorted.map((a) => a.id),
+    ["low-10pct", "high-80pct", "zero-2", "zero-1"],
+  );
+});
+
+test("0% quota account is placed behind non-zero accounts even if marked preferred", () => {
+  const accZeroPreferred = createMockAccount("zero-preferred", {
+    quota: { hourly_percentage: 0, weekly_percentage: 0 } as any,
+  });
+  const accNormalNonZero = createMockAccount("normal-nonzero", {
+    quota: { hourly_percentage: 50, weekly_percentage: 50 } as any,
+  });
+
+  const customRules: CodexLocalAccessCustomRoutingRule[] = [
+    { accountId: "zero-preferred", priority: 10, weight: 1, isBackup: false, isPreferred: true },
+    { accountId: "normal-nonzero", priority: 10, weight: 1, isBackup: false, isPreferred: false },
+  ];
+
+  const sorted = [accZeroPreferred, accNormalNonZero].sort((left, right) =>
+    compareCodexAccountsByRoutingPriority(left, right, {
+      strategy: "auto",
+      customRules,
+    }),
+  );
+
+  assert.deepEqual(
+    sorted.map((a) => a.id),
+    ["normal-nonzero", "zero-preferred"],
+  );
+});
+

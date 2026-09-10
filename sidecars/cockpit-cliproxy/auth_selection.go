@@ -952,6 +952,15 @@ func compareAccountSpecs(left, right *accountSpec, strategy string) int {
 }
 
 func compareAccountSpecsWithManifest(m *manifest, left, right *accountSpec, strategy string) int {
+	leftExhausted := valueInt(left, "quota") != nil && *valueInt(left, "quota") == 0
+	rightExhausted := valueInt(right, "quota") != nil && *valueInt(right, "quota") == 0
+	if leftExhausted != rightExhausted {
+		if leftExhausted {
+			return 1
+		}
+		return -1
+	}
+
 	switch strategy {
 	case "quota_high_first":
 		if cmp := compareIntPtrDesc(valueInt(left, "quota"), valueInt(right, "quota")); cmp != 0 {
