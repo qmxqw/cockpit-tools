@@ -1,0 +1,122 @@
+name: 🚀 Dev Auto Build (Pre-Release)
+
+on:
+  push:
+    branches:
+      - "dev"
+  workflow_dispatch:
+
+concurrency:
+  group: dev-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows:
+    name: "🏗️ Build: Windows (dev)"
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+
+      - name: 🦀 Rust setup
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: 🦀 Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          key: dev-windows-build
+
+      - name: 🐹 Go setup
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: sidecars/cockpit-cliproxy/go.mod
+          cache-dependency-path: sidecars/cockpit-cliproxy/go.sum
+
+      - name: ⚙️ Node.js setup
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: 📦 Install frontend dependencies
+        run: npm install
+
+      - name: 🔄 Sync versions
+        run: npm run sync-version
+
+      - name: 💾 Cache Tauri tooling
+        uses: actions/cache@v4
+        with:
+          path: C:\Users\runneradmin\AppData\Local\tauri
+          key: tauri-deps-windows-latest-${{ hashFiles('package-lock.json', '**/Cargo.toml') }}
+          restore-keys: |
+            tauri-deps-windows-latest-
+
+      - name: 🏗️ Build Windows app
+        shell: bash
+        run: |
+          set -euo pipefail
+          npx tauri build --ci --config src-tauri/tauri.ci.conf.json
+
+      - name: 📦 Prepare Pre-Release assets
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path release-assets -Force | Out-Null
+          if (Test-Path "target\release\cockpit-tools.exe") {
+              Copy-Item "target\release\cockpit-tools.exe" -Destination "release-assets\cockpit-tools-dev-windows-x64.exe" -Force
+          }
+          Get-ChildItem -Path "target\release\bundle" -Recurse -File | Where-Object {
+              $_.Name -like "*-setup.exe" -or $_.Name -like "*.msi"
+          } | ForEach-Object {
+              Copy-Item $_.FullName -Destination "release-assets\" -Force
+          }
+          Write-Host "=== Collected Assets ==="
+          Get-ChildItem release-assets | Select-Object Name, Length
+
+      - name: 📤 Upload to Actions Artifacts (Backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: cockpit-tools-dev-windows-x64
+          path: release-assets/
+          retention-days: 14
+
+      - name: 🚀 Publish / Update Dev Pre-Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="dev-latest"
+          SHORT_SHA="${GITHUB_SHA:0:7}"
+          TITLE="Cockpit Tools (Dev Nightly Build - ${SHORT_SHA})"
+          
+          printf "%s\n" \
+            "### 🚀 Dev 自动构建版本 (Pre-Release)" \
+            "- **触发分支**: \`dev\`" \
+            "- **Commit**: [${SHORT_SHA}](https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})" \
+            "- **构建时间**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" \
+            "" \
+            "#### 📥 下载选项：" \
+            "- **免安装绿色程序**：\`cockpit-tools-dev-windows-x64.exe\` (推荐，下载即用或覆盖替换)" \
+            "- **安装包**：\`*-setup.exe\` 或 \`*.msi\`" \
+            "" \
+            "*注：此版本由 GitHub Actions 在每次 push 到 dev 分支时自动编译发布。*" \
+            > release-notes.md
+
+          # 如果存在历史 dev-latest release 则清理旧发布并重建，保证最新 commit 对应最新资产
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Deleting previous dev-latest release..."
+            gh release delete "$TAG" --yes --cleanup-tag || true
+          fi
+
+          echo "Creating new prerelease $TAG..."
+          gh release create "$TAG" release-assets/* \
+            --title "$TITLE" \
+            --notes-file release-notes.md \
+            --prerelease \
+            --target "$GITHUB_SHA"
+
+          echo "✅ Dev Pre-Release published successfully!"

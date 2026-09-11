@@ -16,7 +16,8 @@
     "pretauri": "npm run typecheck",
     "tauri": "node scripts/tauri.cjs",
     "sync-version": "node scripts/sync-version.js",
-    "build:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1"
+    "build:deploy": "powershell -ExecutionPolicy Bypass -File scripts/deploy-local.ps1",
+    "update:cloud": "powershell -ExecutionPolicy Bypass -File scripts/update-from-cloud.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
