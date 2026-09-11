@@ -21,6 +21,13 @@ function Stop-AppProcesses {
             Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
         }
     }
+    # 彻底清理残留的 WebView2 孤儿进程，避免占用 EBWebView\lockfile 导致 0x800700AA 崩溃
+    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+        $_.Name -like "*msedgewebview2*" -and $_.CommandLine -like "*com.jlcodes.cockpit-tools*"
+    } | ForEach-Object {
+        Write-Host "[STOP] Stopping orphaned WebView2 process: $($_.ProcessId)..." -ForegroundColor Yellow
+        Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+    }
 }
 
 # 1. Check if Go Sidecar needs building

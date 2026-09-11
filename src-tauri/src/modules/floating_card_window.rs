@@ -478,15 +478,29 @@ fn wait_until_main_window_gone<R: Runtime>(app: &AppHandle<R>, attempts: u32) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn is_window_handle_valid<R: Runtime>(window: &WebviewWindow<R>) -> bool {
+    window.hwnd().is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_window_handle_valid<R: Runtime>(_window: &WebviewWindow<R>) -> bool {
+    true
+}
+
 fn ensure_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(WebviewWindow<R>, bool), String> {
     let destroyed_to_tray = MAIN_WINDOW_DESTROYED_TO_TRAY.load(Ordering::SeqCst);
 
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        if !must_recreate_main_window(true, destroyed_to_tray) {
+        let handle_valid = is_window_handle_valid(&window);
+        if handle_valid && !must_recreate_main_window(true, destroyed_to_tray) {
             return Ok((window, false));
         }
 
-        logger::log_info("[Window] 托盘销毁后检测到残留主窗口句柄，强制销毁并重建");
+        logger::log_info(&format!(
+            "[Window] 检测到主窗口句柄失效或托盘销毁，强制销毁并重建 (handle_valid={}, destroyed_to_tray={})",
+            handle_valid, destroyed_to_tray
+        ));
         if let Err(err) = window.destroy() {
             logger::log_warn(&format!(
                 "[Window] 清理残留主窗口失败（仍将尝试重建）: {}",
