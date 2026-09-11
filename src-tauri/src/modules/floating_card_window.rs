@@ -478,15 +478,29 @@ fn wait_until_main_window_gone<R: Runtime>(app: &AppHandle<R>, attempts: u32) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn is_window_handle_valid<R: Runtime>(window: &WebviewWindow<R>) -> bool {
+    window.hwnd().is_ok()
+}
+
+#[cfg(not(target_os = "windows"))]
+fn is_window_handle_valid<R: Runtime>(_window: &WebviewWindow<R>) -> bool {
+    true
+}
+
 fn ensure_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(WebviewWindow<R>, bool), String> {
     let destroyed_to_tray = MAIN_WINDOW_DESTROYED_TO_TRAY.load(Ordering::SeqCst);
 
     if let Some(window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
-        if !must_recreate_main_window(true, destroyed_to_tray) {
+        let handle_valid = is_window_handle_valid(&window);
+        if handle_valid && !must_recreate_main_window(true, destroyed_to_tray) {
             return Ok((window, false));
         }
 
-        logger::log_info("[Window] 托盘销毁后检测到残留主窗口句柄，强制销毁并重建");
+        logger::log_info(&format!(
+            "[Window] 检测到主窗口句柄失效或托盘销毁，强制销毁并重建 (handle_valid={}, destroyed_to_tray={})",
+            handle_valid, destroyed_to_tray
+        ));
         if let Err(err) = window.destroy() {
             logger::log_warn(&format!(
                 "[Window] 清理残留主窗口失败（仍将尝试重建）: {}",
@@ -501,15 +515,26 @@ fn ensure_main_window<R: Runtime>(app: &AppHandle<R>) -> Result<(WebviewWindow<R
         destroyed_to_tray
     ));
     let window_config = clone_main_window_config(app)?;
-    let window = WebviewWindowBuilder::from_config(app, &window_config)
+    let window = match WebviewWindowBuilder::from_config(app, &window_config)
         .map_err(|err| err.to_string())?
         .build()
-        .map_err(|err| {
-            format!(
+    {
+        Ok(win) => win,
+        Err(err) => {
+            if let Some(existing) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+                logger::log_warn(&format!(
+                    "[Window] 重建提示 label 已存在，降级复用现有主窗口: {}",
+                    err
+                ));
+                MAIN_WINDOW_DESTROYED_TO_TRAY.store(false, Ordering::SeqCst);
+                return Ok((existing, false));
+            }
+            return Err(format!(
                 "重建主窗口失败（destroyed_to_tray={}）: {}",
                 destroyed_to_tray, err
-            )
-        })?;
+            ));
+        }
+    };
 
     // Builder already got size from config; re-apply for maximized / DPI edge cases.
     main_window_state::restore_to_window(&window);

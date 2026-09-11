@@ -530,7 +530,16 @@ pub fn run() {
                 modules::main_window_state::restore_to_window(&main);
             }
 
-            apply_startup_minimized(&app.handle());
+            let user_cfg = modules::config::get_user_config();
+            if !user_cfg.startup_minimized {
+                if let Some(main) = app.get_webview_window("main") {
+                    let _ = main.show();
+                    let _ = main.unminimize();
+                    let _ = main.set_focus();
+                }
+            } else {
+                apply_startup_minimized(&app.handle());
+            }
             modules::workbuddy_auto_checkin::start_auto_checkin_scheduler(app.handle().clone());
 
             Ok(())
@@ -1447,4 +1456,7 @@ pub fn run() {
             let _ = (app_handle, event);
         }
     });
+
+    // Tauri 事件循环已彻底结束，强制安全退出进程，避免后台残留线程把持资源与 WebView2 锁
+    std::process::exit(0);
 }
