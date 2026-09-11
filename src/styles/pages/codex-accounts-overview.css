@@ -31,7 +31,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 12px 16px;
+  padding: 8px 16px;
   border: 1px solid var(--border);
   border-radius: 14px;
   background: color-mix(in srgb, var(--bg-card) 88%, transparent);
@@ -105,12 +105,73 @@
   color: var(--text-primary);
 }
 
-.codex-overview-selection-left,
-.codex-overview-selection-actions {
+.codex-overview-selection-left {
   display: inline-flex;
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
+  flex: 1 1 0;
+  min-width: max-content;
+}
+
+.codex-overview-selection-center {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin: 0 auto;
+}
+
+.codex-overview-selection-center .pagination-container {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  padding: 0;
+  margin-top: 0;
+  border: none;
+  background: transparent;
+}
+
+.codex-overview-selection-center .pagination-container::before {
+  display: none;
+}
+
+.codex-overview-selection-center .pagination-info {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.codex-overview-selection-center .pagination-controls {
+  gap: 8px 10px;
+}
+
+.codex-overview-selection-center .pagination-buttons {
+  gap: 4px;
+}
+
+.codex-overview-selection-center .pagination-btn {
+  min-height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+}
+
+.codex-overview-selection-center .pagination-page {
+  min-width: 68px;
+  font-size: 12px;
+}
+
+.codex-overview-selection-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+  flex: 1 1 0;
+  min-width: max-content;
 }
 
 .codex-overview-selected-count {

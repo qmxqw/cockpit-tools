@@ -812,80 +812,98 @@ export function CodexAccountsOverviewPanel(props: CodexAccountsViewProps) {
                       </>
                     )}
                   </div>
-                  {(selected.size > 0 ||
-                    errorAccountIds.length > 0 ||
-                    authFailedExportAccountIds.length > 0 ||
-                    hasDetectableFullQuotaWakeupAccounts) && (
-                    <div className="codex-overview-selection-actions">
-                      <button type="button" className="btn btn-secondary" onClick={() => useCodexPelicanStore.getState().open([...selected])}>
-                        <Play size={14} /><span>{t('pelican.title')}</span>
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-secondary codex-overview-full-quota-wakeup-btn"
-                        onClick={openFullQuotaWakeupTestModal}
-                        disabled={!hasDetectableFullQuotaWakeupAccounts}
-                        title={t(
-                          "codex.wakeup.fullQuotaActionTitle",
-                          "打开账号唤醒测试，账号默认按 5h 额度从高到低排序。",
-                        )}
-                      >
-                        <Power size={14} />
-                        <span>
-                          {t("codex.wakeup.fullQuotaAction", "唤醒账号")}
-                        </span>
-                      </button>
-                      {authFailedExportAccountIds.length > 0 && (
+                  <div className="codex-overview-selection-center">
+                    <PaginationControls
+                      totalItems={pagination.totalItems}
+                      currentPage={pagination.currentPage}
+                      totalPages={pagination.totalPages}
+                      pageSize={pagination.pageSize}
+                      pageSizeOptions={pagination.pageSizeOptions}
+                      rangeStart={pagination.rangeStart}
+                      rangeEnd={pagination.rangeEnd}
+                      canGoPrevious={pagination.canGoPrevious}
+                      canGoNext={pagination.canGoNext}
+                      onPageSizeChange={pagination.setPageSize}
+                      onPreviousPage={pagination.goToPreviousPage}
+                      onNextPage={pagination.goToNextPage}
+                    />
+                  </div>
+                  <div className="codex-overview-selection-actions">
+                    {(selected.size > 0 ||
+                      errorAccountIds.length > 0 ||
+                      authFailedExportAccountIds.length > 0 ||
+                      hasDetectableFullQuotaWakeupAccounts) && (
+                      <>
+                        <button type="button" className="btn btn-secondary" onClick={() => useCodexPelicanStore.getState().open([...selected])}>
+                          <Play size={14} /><span>{t('pelican.title')}</span>
+                        </button>
                         <button
                           type="button"
-                          className="btn btn-secondary"
-                          onClick={handleExportAuthFailedAccounts}
-                          disabled={exporting}
+                          className="btn btn-secondary codex-overview-full-quota-wakeup-btn"
+                          onClick={openFullQuotaWakeupTestModal}
+                          disabled={!hasDetectableFullQuotaWakeupAccounts}
                           title={t(
-                            "codex.exportAuthFailedTitle",
-                            "导出全部授权失败账号",
+                            "codex.wakeup.fullQuotaActionTitle",
+                            "打开账号唤醒测试，账号默认按 5h 额度从高到低排序。",
                           )}
                         >
-                          <Download size={14} />
+                          <Power size={14} />
                           <span>
-                            {t("codex.exportAuthFailed", "导出失败账号")}
-                            {` (${authFailedExportAccountIds.length})`}
+                            {t("codex.wakeup.fullQuotaAction", "唤醒账号")}
                           </span>
                         </button>
-                      )}
-                      {errorAccountIds.length > 0 && (
-                        <button
-                          className="btn btn-danger icon-only codex-overview-clear-error-btn"
-                          onClick={handleClearErrorAccounts}
-                          title={`${t("messages.cleanErrorAccountsAction", "清理 ERROR 账号")} (${errorAccountIds.length})`}
-                        >
-                          <CircleAlert size={14} />
-                        </button>
-                      )}
-                      {selected.size > 0 && (
-                        <>
+                        {authFailedExportAccountIds.length > 0 && (
                           <button
-                            className="btn btn-secondary icon-only"
-                            onClick={() => setShowAddToCodexGroupModal(true)}
-                            title={
-                              activeGroupId
-                                ? `${t("accounts.groups.moveToGroup")} (${selected.size})`
-                                : `${t("codex.groups.addToGroup", "添加至分组")} (${selected.size})`
-                            }
+                            type="button"
+                            className="btn btn-secondary"
+                            onClick={handleExportAuthFailedAccounts}
+                            disabled={exporting}
+                            title={t(
+                              "codex.exportAuthFailedTitle",
+                              "导出全部授权失败账号",
+                            )}
                           >
-                            <FolderPlus size={14} />
+                            <Download size={14} />
+                            <span>
+                              {t("codex.exportAuthFailed", "导出失败账号")}
+                              {` (${authFailedExportAccountIds.length})`}
+                            </span>
                           </button>
+                        )}
+                        {errorAccountIds.length > 0 && (
                           <button
-                            className="btn btn-danger icon-only"
-                            onClick={handleCodexBatchDelete}
-                            title={`${t("common.delete", "删除")} (${selected.size})`}
+                            className="btn btn-danger icon-only codex-overview-clear-error-btn"
+                            onClick={handleClearErrorAccounts}
+                            title={`${t("messages.cleanErrorAccountsAction", "清理 ERROR 账号")} (${errorAccountIds.length})`}
                           >
-                            <Trash2 size={14} />
+                            <CircleAlert size={14} />
                           </button>
-                        </>
-                      )}
-                    </div>
-                  )}
+                        )}
+                        {selected.size > 0 && (
+                          <>
+                            <button
+                              className="btn btn-secondary icon-only"
+                              onClick={() => setShowAddToCodexGroupModal(true)}
+                              title={
+                                activeGroupId
+                                  ? `${t("accounts.groups.moveToGroup")} (${selected.size})`
+                                  : `${t("codex.groups.addToGroup", "添加至分组")} (${selected.size})`
+                              }
+                            >
+                              <FolderPlus size={14} />
+                            </button>
+                            <button
+                              className="btn btn-danger icon-only"
+                              onClick={handleCodexBatchDelete}
+                              title={`${t("common.delete", "删除")} (${selected.size})`}
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </>
+                        )}
+                      </>
+                    )}
+                  </div>
                 </div>
               )}
               {batchDeleteJob && (
@@ -1246,21 +1264,6 @@ export function CodexAccountsOverviewPanel(props: CodexAccountsViewProps) {
               )}
             </>
           )}
-
-          <PaginationControls
-            totalItems={pagination.totalItems}
-            currentPage={pagination.currentPage}
-            totalPages={pagination.totalPages}
-            pageSize={pagination.pageSize}
-            pageSizeOptions={pagination.pageSizeOptions}
-            rangeStart={pagination.rangeStart}
-            rangeEnd={pagination.rangeEnd}
-            canGoPrevious={pagination.canGoPrevious}
-            canGoNext={pagination.canGoNext}
-            onPageSizeChange={pagination.setPageSize}
-            onPreviousPage={pagination.goToPreviousPage}
-            onNextPage={pagination.goToNextPage}
-          />
 
           {<CodexAddAccountDialog {...props} />}
 
