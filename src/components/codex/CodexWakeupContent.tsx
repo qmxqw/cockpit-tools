@@ -1555,6 +1555,9 @@ export function CodexWakeupContent({
     void listen<Record<string, unknown>>('codex://wakeup-progress', (event) => {
       const payload = fromRawWakeupProgressPayload(event.payload as never);
       applyProgressPayload(payload);
+      if (payload.phase === 'account_completed' || payload.phase === 'batch_completed') {
+        void onRefreshAccounts?.();
+      }
       if (payload.phase === 'batch_completed') {
         void loadAll();
       }
@@ -1567,7 +1570,7 @@ export function CodexWakeupContent({
         unlisten();
       }
     };
-  }, [applyProgressPayload, loadAll]);
+  }, [applyProgressPayload, loadAll, onRefreshAccounts]);
 
   const previewRuns = useMemo(() => calculatePreviewRuns(taskDraft), [taskDraft]);
   const executionCounts = useMemo(() => {

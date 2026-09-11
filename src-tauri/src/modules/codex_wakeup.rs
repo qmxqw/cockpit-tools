@@ -218,6 +218,17 @@ pub struct CodexQuotaSnapshot {
     pub weekly_reset_time: Option<i64>,
 }
 
+impl From<&crate::models::codex::CodexQuota> for CodexQuotaSnapshot {
+    fn from(quota: &crate::models::codex::CodexQuota) -> Self {
+        Self {
+            hourly_percentage: Some(quota.hourly_percentage),
+            hourly_reset_time: quota.hourly_reset_time,
+            weekly_percentage: Some(quota.weekly_percentage),
+            weekly_reset_time: quota.weekly_reset_time,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CodexWakeupHistoryItem {
@@ -2546,6 +2557,7 @@ async fn run_single_account(
         }
     };
     let existing_context_text = resolve_account_context_text(&existing);
+    let quota_before = existing.quota.as_ref().map(CodexQuotaSnapshot::from);
 
     if existing.is_api_key_auth() {
         return create_failure_record(
@@ -2585,6 +2597,19 @@ async fn run_single_account(
             }
             let account_context_text = resolve_account_context_text(&output.account);
             let account_email = output.account.email;
+
+            let (quota_after, quota_refresh_error) =
+                match crate::modules::codex_quota::refresh_account_quota(account_id).await {
+                    Ok(quota) => (Some(CodexQuotaSnapshot::from(&quota)), None),
+                    Err(err) => {
+                        logger::log_warn(&format!(
+                            "[CodexWakeup] 唤醒成功但刷新配额失败: account_id={}, error={}",
+                            account_id, err
+                        ));
+                        (None, Some(err))
+                    }
+                };
+
             CodexWakeupHistoryItem {
                 id: uuid::Uuid::new_v4().to_string(),
                 run_id: run_id.to_string(),
@@ -2602,11 +2627,11 @@ async fn run_single_account(
                 model_reasoning_effort: execution_config.model_reasoning_effort.clone(),
                 reply: Some(output.reply),
                 error: None,
-                quota_refresh_error: None,
+                quota_refresh_error,
                 duration_ms: Some(output.duration_ms),
                 cli_path: None,
-                quota_before: None,
-                quota_after: None,
+                quota_before,
+                quota_after,
             }
         }
         Err(err) => {
@@ -2624,6 +2649,7 @@ async fn run_single_account(
                 None,
             );
             record.duration_ms = Some(started_at.elapsed().as_millis() as u64);
+            record.quota_before = quota_before;
             record
         }
     }
@@ -2747,6 +2773,9 @@ pub async fn run_batch(
     }
 
     add_history_items(records.clone())?;
+    if let Some(app) = app {
+        let _ = crate::modules::tray::update_tray_menu(app);
+    }
     emit_progress(
         app,
         &run_id,
