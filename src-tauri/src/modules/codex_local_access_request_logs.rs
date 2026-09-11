@@ -2654,3 +2654,37 @@ fn apply_reprice_changes_to_stats(
     sort_usage_models(&mut stats.monthly.models);
     sort_usage_api_keys(&mut stats.monthly.api_keys);
 }
+
+pub(crate) fn load_account_ids_serviced_since(
+    since_timestamp_ms: i64,
+) -> std::collections::HashSet<String> {
+    let Ok(conn) = open_local_access_logs_db() else {
+        return std::collections::HashSet::new();
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT DISTINCT account_id FROM request_logs WHERE account_id != '' AND timestamp >= ?1",
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess] 查询活跃服务账号失败: {}",
+                err
+            ));
+            return std::collections::HashSet::new();
+        }
+    };
+    let rows = match stmt.query_map([since_timestamp_ms], |row| {
+        row.get::<_, String>(0)
+    }) {
+        Ok(rows) => rows,
+        Err(err) => {
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess] 遍历活跃服务账号失败: {}",
+                err
+            ));
+            return std::collections::HashSet::new();
+        }
+    };
+
+    rows.flatten().collect()
+}
