@@ -261,8 +261,11 @@ fn load_stats_from_disk() -> Result<CodexLocalAccessStats, String> {
 fn collection_content_fingerprint(
     collection: &CodexLocalAccessCollection,
 ) -> Result<Vec<u8>, String> {
-    // Stable byte identity for CAS: any concurrent user edit must change the fingerprint.
-    serde_json::to_vec(collection)
+    // 转换为规范化 JSON Value（serde_json 缺省的 Map 底层为 BTreeMap，自动按键字典序排序），
+    // 彻底消除由于结构体内包含 HashMap 在不同实例间随机哈希种子导致的键乱序问题
+    let normalized = serde_json::to_value(collection)
+        .map_err(|error| format!("序列化 API 服务配置规范化值失败: {}", error))?;
+    serde_json::to_vec(&normalized)
         .map_err(|error| format!("序列化 API 服务配置指纹失败: {}", error))
 }
 
@@ -315,11 +318,13 @@ fn run_collection_account_sanitize_once() -> Result<bool, String> {
         let Some((collection_path, expected_disk_hash)) =
             collection_disk_snapshot_for_cas(&base_fingerprint)?
         else {
-            logger::log_codex_api_info(&format!(
-                "API 服务账号成员后台清理检测到磁盘配置正在更新，重新读取快照: attempt={}",
-                attempt + 1
-            ));
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            if attempt + 1 == MAX_CAS_RETRIES {
+                logger::log_codex_api_warn(&format!(
+                    "API 服务账号成员后台清理检测到磁盘配置与运行时持续不一致，已重试 {} 次",
+                    MAX_CAS_RETRIES
+                ));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
             continue;
         };
 
@@ -378,8 +383,15 @@ fn run_collection_account_sanitize_once() -> Result<bool, String> {
     ))
 }
 
+const SANITIZE_RETRY_COOLDOWN_MS: i64 = 30_000;
+
 fn ensure_collection_account_sanitize_started() {
     if GATEWAY_COLLECTION_ACCOUNT_SANITIZE_COMPLETED.load(Ordering::SeqCst) {
+        return;
+    }
+    let last_failed =
+        GATEWAY_COLLECTION_ACCOUNT_SANITIZE_LAST_FAILED_AT.load(Ordering::SeqCst);
+    if last_failed > 0 && now_ms().saturating_sub(last_failed) < SANITIZE_RETRY_COOLDOWN_MS {
         return;
     }
     if GATEWAY_COLLECTION_ACCOUNT_SANITIZE_RUNNING.swap(true, Ordering::SeqCst) {
@@ -395,14 +407,22 @@ fn ensure_collection_account_sanitize_started() {
             Ok(Ok(false)) => {
                 // Runtime not ready yet — leave COMPLETED clear so the next state read retries.
             }
-            Ok(Err(error)) => logger::log_codex_api_warn(&format!(
-                "API 服务账号成员后台清理失败，将在下次状态读取时重试: {}",
-                error
-            )),
-            Err(error) => logger::log_codex_api_warn(&format!(
-                "API 服务账号成员后台清理任务失败，将在下次状态读取时重试: {}",
-                error
-            )),
+            Ok(Err(error)) => {
+                GATEWAY_COLLECTION_ACCOUNT_SANITIZE_LAST_FAILED_AT
+                    .store(now_ms(), Ordering::SeqCst);
+                logger::log_codex_api_warn(&format!(
+                    "API 服务账号成员后台清理失败，将在 30 秒后重试: {}",
+                    error
+                ));
+            }
+            Err(error) => {
+                GATEWAY_COLLECTION_ACCOUNT_SANITIZE_LAST_FAILED_AT
+                    .store(now_ms(), Ordering::SeqCst);
+                logger::log_codex_api_warn(&format!(
+                    "API 服务账号成员后台清理任务失败，将在 30 秒后重试: {}",
+                    error
+                ));
+            }
         }
         GATEWAY_COLLECTION_ACCOUNT_SANITIZE_RUNNING.store(false, Ordering::SeqCst);
     });

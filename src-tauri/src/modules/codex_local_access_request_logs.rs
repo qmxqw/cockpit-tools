@@ -2688,3 +2688,35 @@ pub(crate) fn load_account_ids_serviced_since(
 
     rows.flatten().collect()
 }
+
+pub(crate) fn load_accounts_last_serviced_at_ms() -> std::collections::HashMap<String, i64> {
+    let Ok(conn) = open_local_access_logs_db() else {
+        return std::collections::HashMap::new();
+    };
+    let mut stmt = match conn.prepare(
+        "SELECT account_id, MAX(timestamp) FROM request_logs WHERE account_id != '' GROUP BY account_id",
+    ) {
+        Ok(stmt) => stmt,
+        Err(err) => {
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess] 查询账号最新服务时间失败: {}",
+                err
+            ));
+            return std::collections::HashMap::new();
+        }
+    };
+    let rows = match stmt.query_map([], |row| {
+        Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+    }) {
+        Ok(rows) => rows,
+        Err(err) => {
+            logger::log_codex_api_warn(&format!(
+                "[CodexLocalAccess] 遍历账号最新服务时间失败: {}",
+                err
+            ));
+            return std::collections::HashMap::new();
+        }
+    };
+
+    rows.flatten().collect()
+}
