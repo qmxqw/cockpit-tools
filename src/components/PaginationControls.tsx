@@ -1,6 +1,8 @@
+import { useRef } from 'react';
 import { Rows3 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { SingleSelectFilterDropdown } from './SingleSelectFilterDropdown';
+import { usePaginationHotkeys } from '../hooks/usePaginationHotkeys';
 
 interface PaginationControlsProps {
   totalItems: number;
@@ -15,6 +17,7 @@ interface PaginationControlsProps {
   onPageSizeChange: (pageSize: number) => void;
   onPreviousPage: () => void;
   onNextPage: () => void;
+  enableKeyboardNavigation?: boolean;
 }
 
 export function PaginationControls({
@@ -30,15 +33,29 @@ export function PaginationControls({
   onPageSizeChange,
   onPreviousPage,
   onNextPage,
+  enableKeyboardNavigation = true,
 }: PaginationControlsProps) {
   const { t } = useTranslation();
+  const containerRef = useRef<HTMLDivElement | null>(null);
+
+  usePaginationHotkeys({
+    containerRef,
+    canGoPrevious,
+    canGoNext,
+    onPreviousPage,
+    onNextPage,
+    enabled: enableKeyboardNavigation && totalItems > 0 && totalPages > 1,
+  });
 
   if (totalItems === 0) {
     return null;
   }
 
+  const prevLabel = t('pagination.prev', 'Previous');
+  const nextLabel = t('pagination.next', 'Next');
+
   return (
-    <div className="pagination-container">
+    <div ref={containerRef} className="pagination-container">
       <div className="pagination-info">
         {t('pagination.info', {
           start: rangeStart,
@@ -70,8 +87,10 @@ export function PaginationControls({
             className="pagination-btn"
             onClick={onPreviousPage}
             disabled={!canGoPrevious}
+            title={`${prevLabel} (PageUp)`}
+            aria-label={`${prevLabel} (PageUp)`}
           >
-            {t('pagination.prev', 'Previous')}
+            {prevLabel}
           </button>
           <span className="pagination-page">
             {t('pagination.page', {
@@ -85,8 +104,10 @@ export function PaginationControls({
             className="pagination-btn"
             onClick={onNextPage}
             disabled={!canGoNext}
+            title={`${nextLabel} (PageDown)`}
+            aria-label={`${nextLabel} (PageDown)`}
           >
-            {t('pagination.next', 'Next')}
+            {nextLabel}
           </button>
         </div>
       </div>
