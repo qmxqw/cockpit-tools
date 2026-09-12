@@ -17,10 +17,8 @@ export interface AutoRefreshSchedulerHandle {
   stop: () => void;
 }
 
-const DEFAULT_TICK_MS = 5_000;
+const DEFAULT_TICK_MS = 1_000;
 const DEFAULT_MAX_CONCURRENT = 1;
-const INITIAL_DELAY_WINDOW_RATIO = 0.8;
-const MIN_INITIAL_DELAY_RATIO = 0.05;
 
 interface RuntimeTask extends AutoRefreshSchedulerTask {
   nextRunAt: number;
@@ -31,32 +29,47 @@ function clampIntervalMs(intervalMs: number): number {
   return Math.max(intervalMs, DEFAULT_TICK_MS);
 }
 
-function stableHash(value: string): number {
-  let hash = 0;
-  for (let index = 0; index < value.length; index += 1) {
-    hash = ((hash << 5) - hash + value.charCodeAt(index)) >>> 0;
+/**
+ * 计算严格大于 `now` 的下一个与本地当天 00:00:00 对齐的运行时间戳。
+ * 例如：intervalMs 为 10 分钟，当前为 14:23:45，则下一个对齐点为 14:30:00.000。
+ */
+export function getNextAlignedRunAt(intervalMs: number, now = Date.now()): number {
+  if (intervalMs <= 0) {
+    return now;
   }
-  return hash >>> 0;
+  const date = new Date(now);
+  const midnight = new Date(
+    date.getFullYear(),
+    date.getMonth(),
+    date.getDate(),
+    0,
+    0,
+    0,
+    0,
+  ).getTime();
+
+  const elapsed = now - midnight;
+  const remainder =
+    elapsed >= 0
+      ? elapsed % intervalMs
+      : ((elapsed % intervalMs) + intervalMs) % intervalMs;
+
+  if (remainder === 0) {
+    return now + intervalMs;
+  }
+  return now + (intervalMs - remainder);
 }
 
-function buildInitialDelayMs(task: AutoRefreshSchedulerTask, tickMs: number): number {
+function resolveInitialNextRunAt(
+  task: AutoRefreshSchedulerTask,
+  tickMs: number,
+  now = Date.now(),
+): number {
   if (typeof task.initialDelayMs === 'number' && Number.isFinite(task.initialDelayMs)) {
-    return Math.max(tickMs, Math.floor(task.initialDelayMs));
+    return now + Math.max(tickMs, Math.floor(task.initialDelayMs));
   }
-
   const intervalMs = clampIntervalMs(task.intervalMs);
-  const maxSpreadMs = Math.max(Math.floor(intervalMs * INITIAL_DELAY_WINDOW_RATIO), tickMs);
-  const minDelayMs = Math.min(
-    maxSpreadMs,
-    Math.max(Math.floor(intervalMs * MIN_INITIAL_DELAY_RATIO), tickMs),
-  );
-
-  if (maxSpreadMs <= minDelayMs) {
-    return minDelayMs;
-  }
-
-  const spreadRange = maxSpreadMs - minDelayMs + 1;
-  return minDelayMs + (stableHash(task.key) % spreadRange);
+  return getNextAlignedRunAt(intervalMs, now);
 }
 
 export function createAutoRefreshScheduler(
@@ -70,11 +83,12 @@ export function createAutoRefreshScheduler(
   let timerId: number | null = null;
   let activeCount = 0;
 
+  const now = Date.now();
   const runtimeTasks: RuntimeTask[] = tasks
     .filter((task) => task.intervalMs > 0)
     .map((task) => ({
       ...task,
-      nextRunAt: Date.now() + buildInitialDelayMs(task, tickMs),
+      nextRunAt: resolveInitialNextRunAt(task, tickMs, now),
       running: false,
     }));
 
@@ -83,9 +97,9 @@ export function createAutoRefreshScheduler(
       return;
     }
 
-    const now = Date.now();
+    const currentNow = Date.now();
     const dueTasks = runtimeTasks
-      .filter((task) => !task.running && task.nextRunAt <= now)
+      .filter((task) => !task.running && task.nextRunAt <= currentNow)
       .sort((left, right) => {
         if (left.nextRunAt !== right.nextRunAt) {
           return left.nextRunAt - right.nextRunAt;
@@ -98,13 +112,14 @@ export function createAutoRefreshScheduler(
         break;
       }
 
+      const clampedInterval = clampIntervalMs(task.intervalMs);
       if (task.shouldSkip?.()) {
-        task.nextRunAt = Date.now() + clampIntervalMs(task.intervalMs);
+        task.nextRunAt = getNextAlignedRunAt(clampedInterval, currentNow);
         continue;
       }
 
       task.running = true;
-      task.nextRunAt = Date.now() + clampIntervalMs(task.intervalMs);
+      task.nextRunAt = getNextAlignedRunAt(clampedInterval, currentNow);
       activeCount += 1;
 
       void Promise.resolve()

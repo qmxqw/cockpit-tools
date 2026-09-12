@@ -2000,6 +2000,35 @@ async fn refresh_quotas_for_account_ids_with_options_and_runtime_snapshot(
         return Ok(Vec::new());
     }
 
+    // 后台自动刷新：严格先进行范围缩小匹配（距上次刷新满60分钟 + 提供过服务 / 额度已到重置时间 / 43200分钟重置窗口），
+    // 匹配出真正需要刷新的候选账号后，再仅保留上次刷新时间最久的最多 1 个执行刷新！
+    let unique_ids: Vec<String> = if priority
+        == crate::modules::codex_quota_refresh_scheduler::RefreshPriority::Background
+    {
+        let last_serviced_at_ms_map =
+            crate::modules::codex_local_access::load_accounts_last_serviced_at_ms();
+        let candidate_accounts: Vec<CodexAccount> = unique_ids
+            .into_iter()
+            .filter_map(|id| codex_account::load_account(&id))
+            .filter(supports_quota_refresh)
+            .filter(|account| {
+                should_refresh_account_in_background(account, &last_serviced_at_ms_map)
+            })
+            .collect();
+
+        let (total_matched, picked_ids) =
+            pick_background_refresh_target_account_ids(candidate_accounts);
+        logger::log_info(&format!(
+            "[Codex配额] 后台自动批量刷新匹配：共 {} 个账号满足刷新条件，仅保留上次刷新时间最久的 {} 个执行刷新: {:?}",
+            total_matched,
+            picked_ids.len(),
+            picked_ids
+        ));
+        picked_ids
+    } else {
+        unique_ids
+    };
+
     let needs_runtime_snapshot = unique_ids.iter().any(|account_id| {
         codex_account::load_account(account_id).is_some_and(|account| {
             !account.is_api_key_auth()
@@ -2054,12 +2083,21 @@ pub async fn refresh_all_quotas_for_background(
     .await
 }
 
-static LAST_BACKGROUND_AUTO_REFRESH_MS: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(0);
-
 fn should_refresh_account_in_background(
     account: &CodexAccount,
-    serviced_account_ids: &std::collections::HashSet<String>,
+    last_serviced_at_ms_map: &std::collections::HashMap<String, i64>,
+) -> bool {
+    should_refresh_account_in_background_at(
+        account,
+        last_serviced_at_ms_map,
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+pub(crate) fn should_refresh_account_in_background_at(
+    account: &CodexAccount,
+    last_serviced_at_ms_map: &std::collections::HashMap<String, i64>,
+    now_sec: i64,
 ) -> bool {
     let Some(usage_updated_at) = account.usage_updated_at else {
         return true;
@@ -2068,25 +2106,101 @@ fn should_refresh_account_in_background(
         return true;
     }
 
-    // 条件 1: 自从上次自动刷新以来，提供过服务 (被 API 服务使用过)
-    if serviced_account_ids.contains(&account.id) {
-        return true;
+    // 过滤机制: 同一个账号必须距离上次刷新满 60 分钟 (3600 秒)
+    const MIN_REFRESH_INTERVAL_SECS: i64 = 60 * 60;
+    if now_sec.saturating_sub(usage_updated_at) < MIN_REFRESH_INTERVAL_SECS {
+        return false;
     }
 
-    // 条件 2: 刷新时间 + 43200分钟 与 配额重置时间 误差 60 秒以内
-    // 43200 分钟 = 43200 * 60 = 2,592,000 秒
+    // 条件 1: 自从上次刷新以来，提供过服务 (被 API 服务使用过)
+    if let Some(&last_service_ms) = last_serviced_at_ms_map.get(&account.id) {
+        if last_service_ms >= usage_updated_at * 1000 {
+            return true;
+        }
+    }
+
+    // 条件 2: 额度已到达重置时间（额度已重置：自重置以来未刷新，或额度仍未恢复满额）
     if let Some(quota) = account.quota.as_ref() {
-        let window_seconds: i64 = 43200 * 60;
-        let candidate_resets = [quota.hourly_reset_time, quota.weekly_reset_time];
-        let is_fresh_cycle = candidate_resets.iter().flatten().any(|&reset_time| {
-            (usage_updated_at + window_seconds - reset_time).abs() <= 60
+        let candidate_resets = [
+            (quota.hourly_reset_time, quota.hourly_percentage),
+            (quota.weekly_reset_time, quota.weekly_percentage),
+        ];
+        let is_reset_due = candidate_resets.iter().any(|&(reset_time_opt, percentage)| {
+            if let Some(reset_time) = reset_time_opt {
+                if reset_time > 0 && now_sec >= reset_time {
+                    return usage_updated_at < reset_time || percentage < 100;
+                }
+            }
+            false
         });
+        if is_reset_due {
+            return true;
+        }
+
+        // 条件 3: 刷新时间 + 43200分钟 与 配额重置时间 误差 60 秒以内 (基准重置窗口)
+        let window_seconds: i64 = 43200 * 60;
+        let is_fresh_cycle = [quota.hourly_reset_time, quota.weekly_reset_time]
+            .iter()
+            .flatten()
+            .any(|&reset_time| {
+                (usage_updated_at + window_seconds - reset_time).abs() <= 60
+            });
         if is_fresh_cycle {
             return true;
         }
     }
 
     false
+}
+
+/// 匹配出可以刷新的账号后：
+/// 若 update 时间最近的距离现在都超过了 300 分钟（或从未刷新），就按账号创建时间由早到晚排序取 1 个；
+/// 否则依然按上次刷新时间由久到新排序取 1 个。
+pub(crate) fn pick_background_refresh_target_account_ids(
+    candidate_accounts: Vec<CodexAccount>,
+) -> (usize, Vec<String>) {
+    pick_background_refresh_target_account_ids_at(
+        candidate_accounts,
+        chrono::Utc::now().timestamp(),
+    )
+}
+
+pub(crate) fn pick_background_refresh_target_account_ids_at(
+    mut candidate_accounts: Vec<CodexAccount>,
+    now_sec: i64,
+) -> (usize, Vec<String>) {
+    let total_matched = candidate_accounts.len();
+    if candidate_accounts.is_empty() {
+        return (0, Vec::new());
+    }
+
+    const RECENT_REFRESH_WINDOW_SECS: i64 = 300 * 60;
+    let most_recent_update = candidate_accounts
+        .iter()
+        .filter_map(|account| account.usage_updated_at)
+        .filter(|&timestamp| timestamp > 0)
+        .max();
+
+    let sort_by_created_at = match most_recent_update {
+        Some(latest_update) => now_sec.saturating_sub(latest_update) > RECENT_REFRESH_WINDOW_SECS,
+        None => true,
+    };
+
+    if sort_by_created_at {
+        candidate_accounts.sort_by(|a, b| {
+            a.created_at.cmp(&b.created_at).then_with(|| a.id.cmp(&b.id))
+        });
+    } else {
+        candidate_accounts.sort_by(|a, b| {
+            let a_time = a.usage_updated_at.unwrap_or(0);
+            let b_time = b.usage_updated_at.unwrap_or(0);
+            a_time.cmp(&b_time).then_with(|| a.id.cmp(&b.id))
+        });
+    }
+
+    candidate_accounts.truncate(1);
+    let picked_ids = candidate_accounts.into_iter().map(|account| account.id).collect();
+    (total_matched, picked_ids)
 }
 
 async fn refresh_all_quotas_with_options(
@@ -2122,29 +2236,13 @@ async fn refresh_all_quotas_with_options(
 
     let is_background =
         priority == crate::modules::codex_quota_refresh_scheduler::RefreshPriority::Background;
-    let serviced_account_ids = if is_background {
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let last_refresh_ms =
-            LAST_BACKGROUND_AUTO_REFRESH_MS.load(std::sync::atomic::Ordering::Relaxed);
-        let since_ms = if last_refresh_ms > 0 {
-            last_refresh_ms
-        } else {
-            // 初次后台自动刷新：以当前已有账号中最早的上次更新时间作为起点
-            codex_account::list_accounts()
-                .into_iter()
-                .filter_map(|acc| acc.usage_updated_at)
-                .filter(|&ts| ts > 0)
-                .min()
-                .map(|sec| sec * 1000)
-                .unwrap_or(0)
-        };
-        LAST_BACKGROUND_AUTO_REFRESH_MS.store(now_ms, std::sync::atomic::Ordering::Relaxed);
-        crate::modules::codex_local_access::load_account_ids_serviced_since(since_ms)
+    let last_serviced_at_ms_map = if is_background {
+        crate::modules::codex_local_access::load_accounts_last_serviced_at_ms()
     } else {
-        std::collections::HashSet::new()
+        std::collections::HashMap::new()
     };
 
-    let account_ids: Vec<String> = codex_account::list_accounts()
+    let candidate_accounts: Vec<CodexAccount> = codex_account::list_accounts()
         .into_iter()
         .filter(supports_quota_refresh)
         .filter(|account| !disabled.contains(&account.id))
@@ -2153,17 +2251,23 @@ async fn refresh_all_quotas_with_options(
             if !is_background {
                 return true;
             }
-            should_refresh_account_in_background(account, &serviced_account_ids)
+            should_refresh_account_in_background(account, &last_serviced_at_ms_map)
         })
-        .map(|account| account.id)
         .collect();
 
-    if is_background {
+    let account_ids: Vec<String> = if is_background {
+        let (total_matched, picked_ids) =
+            pick_background_refresh_target_account_ids(candidate_accounts);
         logger::log_info(&format!(
-            "[Codex配额] 后台自动刷新目标账号 {} 个 (需满足: 上次刷新后提供过服务 或 处于43200分钟基准重置窗口)",
-            account_ids.len()
+            "[Codex配额] 后台自动刷新匹配到 {} 个候选账号，仅保留上次刷新时间最久的 {} 个执行刷新: {:?}",
+            total_matched,
+            picked_ids.len(),
+            picked_ids
         ));
-    }
+        picked_ids
+    } else {
+        candidate_accounts.into_iter().map(|account| account.id).collect()
+    };
 
     refresh_quotas_for_account_ids_with_options_and_runtime_snapshot(
         &account_ids,
@@ -2210,7 +2314,7 @@ mod tests {
 
     #[test]
     fn background_auto_refresh_filter_conditions() {
-        use std::collections::HashSet;
+        use std::collections::HashMap;
 
         // 1. 从未刷新过的账号 -> 应当刷新
         let mut account = CodexAccount::new(
@@ -2223,21 +2327,27 @@ mod tests {
             },
         );
         account.usage_updated_at = None;
-        let empty_serviced_set = HashSet::new();
-        assert!(super::should_refresh_account_in_background(&account, &empty_serviced_set));
+        let empty_serviced_map = HashMap::new();
+        assert!(super::should_refresh_account_in_background(&account, &empty_serviced_map));
 
-        // 2. 自上次刷新后提供过服务 -> 应当刷新
+        // 2. 刷新过，但距离上次刷新未满 60 分钟 (例如 30 分钟前刷新) -> 无论是否提供服务/是否重置，均不可刷新
         let updated_at_sec = 1_700_000_000;
         account.usage_updated_at = Some(updated_at_sec);
-        let mut set_with_acc = HashSet::new();
-        set_with_acc.insert("acc-1".to_string());
-        assert!(super::should_refresh_account_in_background(&account, &set_with_acc));
+        let test_now_30m = updated_at_sec + 30 * 60; // 30 分钟后
+        let mut serviced_map = HashMap::new();
+        serviced_map.insert("acc-1".to_string(), (updated_at_sec + 10) * 1000);
+        // 虽然自上次刷新后提供过服务，但未满 60 分钟 -> 应当跳过
+        assert!(!super::should_refresh_account_in_background_at(&account, &serviced_map, test_now_30m));
 
-        // 3. 上次刷新后未提供过服务，且不符合 43200 分钟窗口 -> 跳过
+        // 3. 距离上次刷新满 60 分钟 (例如 61 分钟前刷新) 且提供过服务 -> 应当刷新
+        let test_now_61m = updated_at_sec + 61 * 60; // 61 分钟后
+        assert!(super::should_refresh_account_in_background_at(&account, &serviced_map, test_now_61m));
+
+        // 4. 满 60 分钟，但未提供过服务，且不符合 43200 分钟窗口与重置时间 -> 跳过
         account.quota = None;
-        assert!(!super::should_refresh_account_in_background(&account, &empty_serviced_set));
+        assert!(!super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_61m));
 
-        // 4. 未提供服务，但符合 43200 分钟重置误差 60 秒以内 (43200 * 60 = 2,592,000) -> 应当刷新
+        // 5. 满 60 分钟，未提供服务，重置时间未到，但符合 43200 分钟重置误差 60 秒以内 (43200 * 60 = 2,592,000) -> 应当刷新
         let mut quota = crate::models::codex::CodexQuota {
             hourly_percentage: 100,
             hourly_reset_time: Some(updated_at_sec + 2_592_000 + 35), // 误差 35 秒
@@ -2253,12 +2363,120 @@ mod tests {
             raw_data: None,
         };
         account.quota = Some(quota.clone());
-        assert!(super::should_refresh_account_in_background(&account, &empty_serviced_set));
+        assert!(super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_61m));
 
-        // 5. 误差超过 60 秒 (如 90 秒) -> 跳过
+        // 6. 满 60 分钟，重置时间未到，且误差超过 60 秒 (如 90 秒) -> 跳过
         quota.hourly_reset_time = Some(updated_at_sec + 2_592_000 + 90);
+        account.quota = Some(quota.clone());
+        assert!(!super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_61m));
+
+        // 7. 额度已到达重置时间 (now >= reset_time)，但距离上次刷新未满 60 分钟 -> 应当跳过
+        let reset_time = updated_at_sec + 18_000; // 5小时重置点
+        let recent_updated_at = reset_time - 600; // 重置点前10分钟刷新过
+        account.usage_updated_at = Some(recent_updated_at);
+        quota.hourly_percentage = 100;
+        quota.hourly_reset_time = Some(reset_time);
+        account.quota = Some(quota.clone());
+        let test_now_after_reset_recent = reset_time + 60; // 距上次刷新仅 11 分钟
+        assert!(!super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_after_reset_recent));
+
+        // 8. 额度已到达重置时间，且距离上次刷新已满 60 分钟，自重置后尚未刷新 -> 应当刷新
+        account.usage_updated_at = Some(updated_at_sec);
+        let test_now_after_reset_mature = reset_time + 60; // 距上次刷新已远超 60 分钟
+        assert!(super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_after_reset_mature));
+
+        // 9. 额度已到达重置时间，虽在重置后刷新过，但额度仍未恢复满额 (percentage < 100)，且距上次刷新满 60 分钟 -> 应当刷新
+        account.usage_updated_at = Some(reset_time + 10);
+        quota.hourly_percentage = 30; // 仍未满额
+        account.quota = Some(quota.clone());
+        let test_now_refreshed_partial_mature = reset_time + 10 + 3601; // 距上次刷新满 60 分钟
+        assert!(super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_refreshed_partial_mature));
+
+        // 10. 重置后已刷新满额 (usage_updated_at >= reset_time 且 percentage == 100) -> 不再无意义重复刷新
+        quota.hourly_percentage = 100;
         account.quota = Some(quota);
-        assert!(!super::should_refresh_account_in_background(&account, &empty_serviced_set));
+        assert!(!super::should_refresh_account_in_background_at(&account, &empty_serviced_map, test_now_refreshed_partial_mature));
+    }
+
+    #[test]
+    fn background_auto_refresh_picks_oldest_one_account() {
+        let make_account = |id: &str, usage_updated_at: Option<i64>| {
+            let mut acc = CodexAccount::new(
+                id.to_string(),
+                format!("{}@example.com", id),
+                CodexTokens {
+                    id_token: String::new(),
+                    access_token: String::new(),
+                    refresh_token: None,
+                },
+            );
+            acc.usage_updated_at = usage_updated_at;
+            acc
+        };
+
+        // 4 个候选账号，时间分布不同
+        let acc1 = make_account("acc-1", Some(1_700_002_000));
+        let acc2 = make_account("acc-2", None); // 从未刷新，最久
+        let acc3 = make_account("acc-3", Some(1_700_001_000)); // 次久
+        let acc4 = make_account("acc-4", Some(1_700_003_000)); // 最新
+
+        let candidates = vec![acc1, acc2, acc3, acc4];
+        // 最近刷新距离当前未超过 300 分钟 (当前时间设为 1_700_003_000 + 60)
+        let (total_matched, picked_ids) =
+            super::pick_background_refresh_target_account_ids_at(candidates, 1_700_003_000 + 60);
+
+        assert_eq!(total_matched, 4);
+        assert_eq!(picked_ids.len(), 1);
+        // 最久未刷新的 1 个账号应是 acc-2 (None)
+        assert_eq!(picked_ids, vec!["acc-2".to_string()]);
+
+        // 只有 1 个时保留 1 个
+        let acc_single = make_account("acc-single", Some(1_700_000_000));
+        let (total_matched, picked_ids) =
+            super::pick_background_refresh_target_account_ids_at(vec![acc_single], 1_700_000_000 + 60);
+        assert_eq!(total_matched, 1);
+        assert_eq!(picked_ids, vec!["acc-single".to_string()]);
+    }
+
+    #[test]
+    fn background_auto_refresh_picks_by_created_at_when_recent_update_exceeds_300m() {
+        let make_account = |id: &str, usage_updated_at: Option<i64>, created_at: i64| {
+            let mut acc = CodexAccount::new(
+                id.to_string(),
+                format!("{}@example.com", id),
+                CodexTokens {
+                    id_token: String::new(),
+                    access_token: String::new(),
+                    refresh_token: None,
+                },
+            );
+            acc.usage_updated_at = usage_updated_at;
+            acc.created_at = created_at;
+            acc
+        };
+
+        // 场景 1: 最近更新时间为 1_700_000_000，当前时间超过 300 分钟 (301分钟后)
+        let now_sec = 1_700_000_000 + 301 * 60;
+        let acc1 = make_account("acc-1", Some(1_700_000_000), 1_690_003_000); // 较晚创建
+        let acc2 = make_account("acc-2", Some(1_699_990_000), 1_690_001_000); // 最早创建
+        let acc3 = make_account("acc-3", Some(1_699_980_000), 1_690_002_000); // 次早创建
+
+        let candidates = vec![acc1, acc2, acc3];
+        let (total_matched, picked_ids) =
+            super::pick_background_refresh_target_account_ids_at(candidates, now_sec);
+
+        assert_eq!(total_matched, 3);
+        assert_eq!(picked_ids.len(), 1);
+        // 按创建时间最早排序，应选择 acc-2 (created_at: 1_690_001_000)
+        assert_eq!(picked_ids, vec!["acc-2".to_string()]);
+
+        // 场景 2: 全部账号均从未刷新过 (None)，同样走创建时间最早优先
+        let acc_none_1 = make_account("none-1", None, 1_690_005_000);
+        let acc_none_2 = make_account("none-2", None, 1_690_004_000);
+        let (total_matched, picked_ids) =
+            super::pick_background_refresh_target_account_ids_at(vec![acc_none_1, acc_none_2], now_sec);
+        assert_eq!(total_matched, 2);
+        assert_eq!(picked_ids, vec!["none-2".to_string()]);
     }
 
     fn agent_identity_test_account() -> CodexAccount {

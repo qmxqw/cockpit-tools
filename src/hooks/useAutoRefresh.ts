@@ -114,7 +114,7 @@ interface PlatformRefreshDescriptor {
 }
 
 const STARTUP_AUTO_REFRESH_SETUP_DELAY_MS = 2500;
-const AUTO_REFRESH_TICK_MS = 5_000;
+const AUTO_REFRESH_TICK_MS = 1_000;
 const AUTO_REFRESH_MAX_CONCURRENT = 1;
 const TRAE_CURRENT_ACCOUNT_ID_KEYS = {
   trae: 'agtools.trae.current_account_id',
