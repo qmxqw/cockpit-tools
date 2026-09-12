@@ -97,6 +97,26 @@ fn collect_task_reset_timestamps(task: &codex_wakeup::CodexWakeupTask) -> Vec<i6
     timestamps
 }
 
+#[inline]
+fn is_special_schedule_active_today(name: &str, today: chrono::NaiveDate) -> bool {
+    let b = name.trim().as_bytes();
+    if b.len() != 3 && b.len() != 2 {
+        return true;
+    }
+    let num = match b.len() {
+        3 if b[1].is_ascii_digit() && b[2].is_ascii_digit() => {
+            (b[1] - b'0') as u32 * 10 + (b[2] - b'0') as u32
+        }
+        2 if b[1].is_ascii_digit() => (b[1] - b'0') as u32,
+        _ => return true,
+    };
+    match b[0] {
+        b'd' | b'D' if (1..=31).contains(&num) => today.day() == num,
+        b'w' | b'W' if (1..=7).contains(&num) => today.weekday().number_from_monday() == num,
+        _ => true,
+    }
+}
+
 fn current_due_at(task: &codex_wakeup::CodexWakeupTask, now: DateTime<Local>) -> Option<i64> {
     match task.schedule.kind.as_str() {
         "daily" => {
@@ -122,6 +142,9 @@ fn current_due_at(task: &codex_wakeup::CodexWakeupTask, now: DateTime<Local>) ->
             }
         }
         "interval" => {
+            if !is_special_schedule_active_today(&task.name, now.date_naive()) {
+                return None;
+            }
             let interval_seconds =
                 i64::from(task.schedule.interval_hours.unwrap_or(4).max(1)) * 3600;
             let due_at = task.last_run_at.unwrap_or(task.created_at) + interval_seconds;
@@ -175,7 +198,21 @@ pub fn calculate_next_run_at(task: &codex_wakeup::CodexWakeupTask) -> Option<i64
         "interval" => {
             let interval_seconds =
                 i64::from(task.schedule.interval_hours.unwrap_or(4).max(1)) * 3600;
-            Some(task.last_run_at.unwrap_or(task.created_at) + interval_seconds)
+            let candidate = task.last_run_at.unwrap_or(task.created_at) + interval_seconds;
+            let dt = match Local.timestamp_opt(candidate, 0).single() {
+                Some(dt) => dt,
+                None => return Some(candidate),
+            };
+            if is_special_schedule_active_today(&task.name, dt.date_naive()) {
+                return Some(candidate);
+            }
+            for offset in 1..=65 {
+                let next_date = dt.date_naive() + chrono::Duration::days(offset);
+                if is_special_schedule_active_today(&task.name, next_date) {
+                    return build_local_datetime(next_date, 0).map(|d| d.timestamp());
+                }
+            }
+            None
         }
         "quota_reset" => collect_task_reset_timestamps(task)
             .into_iter()
@@ -394,8 +431,13 @@ async fn run_scheduler_once(app: &AppHandle) {
     }
 
     let now = Local::now();
+    let today = now.date_naive();
     for task in state.tasks {
         if !task.enabled {
+            continue;
+        }
+        // 尽早判断：仅针对 interval 任务，若不符合今日生效条件则直接跳过，零性能损耗
+        if task.schedule.kind == "interval" && !is_special_schedule_active_today(&task.name, today) {
             continue;
         }
         if current_due_at(&task, now).is_none() {
@@ -436,3 +478,5 @@ pub fn ensure_started(app: AppHandle) {
         }
     });
 }
+
+

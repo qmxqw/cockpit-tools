@@ -1998,6 +1998,11 @@ fn load_state_inner() -> Result<CodexWakeupState, String> {
         }
     };
     state.tasks = state.tasks.iter().map(normalize_task).collect();
+    state.tasks.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
     let mut preset_ids = HashSet::new();
     state.model_presets = state
         .model_presets
@@ -2075,6 +2080,12 @@ pub fn save_state(next_state: &CodexWakeupState) -> Result<CodexWakeupState, Str
     apply_model_preset_migrations(&mut state);
     let existing_accounts = existing_codex_account_id_set();
     let _ = prune_missing_accounts_from_state(&mut state, &existing_accounts);
+
+    state.tasks.sort_by(|left, right| {
+        left.created_at
+            .cmp(&right.created_at)
+            .then_with(|| left.id.cmp(&right.id))
+    });
 
     refresh_next_run_at(&mut state);
 

@@ -597,10 +597,6 @@ function filterAllLabel(t: ReturnType<typeof useTranslation>['t']) {
   return t('common.shared.filter.all', { count: 0 }).replace(/\s*[（(]\s*\d+\s*[)）]\s*$/u, '');
 }
 
-function deriveStateEnabled(tasks: CodexWakeupTask[]) {
-  return tasks.some((task) => task.enabled);
-}
-
 function formatSelectionPreview(values: string[], limit: number = 2) {
   if (values.length === 0) return '—';
   if (values.length <= limit) return values.join(' / ');
@@ -1281,15 +1277,11 @@ export function CodexWakeupContent({
   const sortedTasks = useMemo(() => {
     const tasks = [...state.tasks];
     tasks.sort((left, right) => {
-      if (left.enabled !== right.enabled) {
-        return left.enabled ? -1 : 1;
+      const diff = left.created_at - right.created_at;
+      if (diff !== 0) {
+        return diff;
       }
-      const leftNext = left.next_run_at ?? Number.MAX_SAFE_INTEGER;
-      const rightNext = right.next_run_at ?? Number.MAX_SAFE_INTEGER;
-      if (leftNext !== rightNext) {
-        return leftNext - rightNext;
-      }
-      return right.updated_at - left.updated_at;
+      return left.id.localeCompare(right.id);
     });
     return tasks;
   }, [state.tasks]);
@@ -2289,10 +2281,8 @@ export function CodexWakeupContent({
   );
 
   const toggleAllTasks = useCallback(async () => {
-    if (state.tasks.length === 0) return;
     const nextEnabled = !state.enabled;
-    const nextTasks = state.tasks.map((task) => ({ ...task, enabled: nextEnabled }));
-    await persistTasks(nextEnabled, nextTasks);
+    await persistTasks(nextEnabled, state.tasks);
   }, [persistTasks, state.enabled, state.tasks]);
 
   const handleDeleteTask = useCallback(
@@ -2306,9 +2296,9 @@ export function CodexWakeupContent({
       );
       if (!confirmed) return;
       const nextTasks = state.tasks.filter((item) => item.id !== task.id);
-      await persistTasks(deriveStateEnabled(nextTasks), nextTasks);
+      await persistTasks(state.enabled, nextTasks);
     },
-    [persistTasks, state.tasks, t],
+    [persistTasks, state.enabled, state.tasks, t],
   );
 
   const handleToggleTask = useCallback(
@@ -2316,9 +2306,9 @@ export function CodexWakeupContent({
       const nextTasks = state.tasks.map((item) =>
         item.id === task.id ? { ...item, enabled: !item.enabled } : item,
       );
-      await persistTasks(deriveStateEnabled(nextTasks), nextTasks);
+      await persistTasks(state.enabled, nextTasks);
     },
-    [persistTasks, state.tasks],
+    [persistTasks, state.enabled, state.tasks],
   );
 
   const handleSaveTask = useCallback(async () => {
@@ -2405,13 +2395,13 @@ export function CodexWakeupContent({
       ? state.tasks.map((item) => (item.id === taskDraft.id ? { ...item, ...nextTask } : item))
       : [nextTask, ...state.tasks];
     try {
-      await persistTasks(deriveStateEnabled(nextTasks), nextTasks);
+      await persistTasks(state.enabled, nextTasks);
       setShowTaskModal(false);
       setTaskModalError(null);
     } catch (error) {
       setTaskModalError(String(error));
     }
-  }, [oauthAccountIdSet, persistTasks, selectedTaskPreset, state.tasks, t, taskDraft]);
+  }, [oauthAccountIdSet, persistTasks, selectedTaskPreset, state.enabled, state.tasks, t, taskDraft]);
 
   const handleRunTask = useCallback(
     async (task: CodexWakeupTask) => {
