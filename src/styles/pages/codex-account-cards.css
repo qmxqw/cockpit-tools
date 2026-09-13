@@ -57,6 +57,31 @@
   box-shadow: 0 14px 34px rgba(180, 83, 9, 0.12);
 }
 
+/* 当前为 API 提供服务的首位账号：完全复用强制置顶「API服务」信息卡的边框颜色与虚线样式 */
+.codex-account-card.is-api-serving {
+  border: 1.5px dashed rgba(29, 78, 216, 0.45) !important;
+}
+
+[data-theme="dark"] .codex-account-card.is-api-serving {
+  border: 1.5px dashed rgba(96, 165, 250, 0.5) !important;
+}
+
+/* 满血储备账号（未开始倒计时）：1.5px 金黄色边框 */
+.codex-account-card.is-fresh-reserve {
+  border: 1.5px solid #f59e0b !important;
+}
+
+[data-theme="dark"] .codex-account-card.is-fresh-reserve {
+  border: 1.5px solid #fbbf24 !important;
+}
+
+/* 2种账号均取消 hover 效果：保持静止不浮起、无额外阴影与边框变色 */
+.codex-account-card.is-api-serving:hover,
+.codex-account-card.is-fresh-reserve:hover {
+  transform: none !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
 .codex-accounts-page .account-table tr.sponsor-api-account td:first-child {
   border-left: 3px solid rgba(217, 119, 6, 0.52);
 }
@@ -1607,9 +1632,20 @@
   border-top: 1px solid var(--border-light);
 }
 
+.codex-account-card .card-dates {
+  display: flex;
+  align-items: center;
+  flex-wrap: nowrap;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.2;
+}
+
 .codex-account-card .card-date {
   display: inline-flex;
   align-items: center;
+  flex-shrink: 0;
   min-width: 0;
   margin-bottom: 0;
   overflow: hidden;
@@ -1617,6 +1653,12 @@
   white-space: nowrap;
   font-size: 11px;
   color: var(--text-secondary);
+}
+
+.codex-account-card .card-date--updated {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
 }
 
 .codex-account-card .card-actions {

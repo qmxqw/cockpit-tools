@@ -7,8 +7,10 @@ import {
   type CodexAccount,
 } from '../types/codex.ts';
 import {
+  type CodexLocalAccessCollection,
   type CodexLocalAccessCustomRoutingRule,
   type CodexLocalAccessRoutingStrategy,
+  type CodexLocalAccessState,
 } from '../types/codexLocalAccess.ts';
 
 const CHAT_COMPLETIONS_PROVIDER_HOSTS = [
@@ -476,5 +478,65 @@ export function compareCodexAccountsByRoutingPriority(
   }
 
   return leftOriginalIndex - rightOriginalIndex;
+}
+
+/**
+ * 判定一个账号是否为满血储备账号（未开启倒计时）。
+ * 需同时满足：额度 100%，且开窗时间差 |(resetAt - updatedAt) - windowMinutes * 60| <= 60 秒。
+ */
+export function isCodexFreshReserveAccount(
+  account?: CodexAccount | null,
+): boolean {
+  const quota = account?.quota;
+  if (!quota || quota.hourly_percentage !== 100) return false;
+  if (
+    quota.weekly_window_present === true &&
+    quota.weekly_percentage !== 100
+  ) {
+    return false;
+  }
+  const resetAt = quota.hourly_reset_time;
+  const updatedAt = account.usage_updated_at;
+  if (!resetAt || !updatedAt || resetAt <= 0 || updatedAt <= 0) return false;
+  const windowSec = (quota.hourly_window_minutes || 43200) * 60;
+  return Math.abs(resetAt - updatedAt - windowSec) <= 60;
+}
+
+/**
+ * 挑选当前为本地 API 服务承载请求的首个账号（仅最多 1 个）。
+ */
+export function resolveApiServingFirstAccountId(
+  accounts: CodexAccount[],
+  localAccessState?: CodexLocalAccessState | null,
+  localAccessCollection?: CodexLocalAccessCollection | null,
+): string | null {
+  if (!localAccessState?.running || localAccessCollection?.enabled === false) {
+    return null;
+  }
+  const boundId = localAccessCollection?.boundOauthAccountId?.trim();
+  if (boundId && accounts.some((a) => a.id === boundId)) {
+    return boundId;
+  }
+  const poolIds = localAccessCollection?.accountIds || [];
+  if (poolIds.length === 0) return null;
+  const poolSet = new Set(poolIds);
+  const candidates = accounts.filter((a) => poolSet.has(a.id));
+  if (candidates.length === 0) return null;
+  const available = candidates.filter((a) => {
+    const health = localAccessState?.accountHealth?.find(
+      (item) => item.accountId === a.id,
+    );
+    return health ? health.available !== false : true;
+  });
+  const eligible = available.length > 0 ? available : candidates;
+  const sorted = [...eligible].sort((a, b) =>
+    compareCodexAccountsByRoutingPriority(a, b, {
+      strategy: localAccessCollection?.routingStrategy || "auto",
+      customRules: localAccessCollection?.customRoutingRules || [],
+      leftOriginalIndex: poolIds.indexOf(a.id),
+      rightOriginalIndex: poolIds.indexOf(b.id),
+    }),
+  );
+  return sorted[0]?.id || null;
 }
 

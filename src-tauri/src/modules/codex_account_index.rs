@@ -1302,6 +1302,38 @@ pub fn list_accounts_checked() -> Result<Vec<CodexAccount>, String> {
     }
 
     spawn_fingerprint_default_session_resync();
+    attach_latest_quota_pool_updated_at(&mut accounts);
     Ok(accounts)
+}
+
+fn attach_latest_quota_pool_updated_at(accounts: &mut [CodexAccount]) {
+    let Ok(data_dir) = crate::modules::account::get_data_dir() else {
+        return;
+    };
+    let path = data_dir
+        .join("codex_local_access_sidecar")
+        .join("quota-pool-state.json");
+    if !path.exists() {
+        return;
+    }
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return;
+    };
+    let Some(accounts_obj) = val.get("accounts").and_then(|a| a.as_object()) else {
+        return;
+    };
+
+    for account in accounts.iter_mut() {
+        if let Some(entry) = accounts_obj.get(&account.id) {
+            if let Some(up) = entry.get("updatedAt").and_then(|u| u.as_i64()) {
+                if up > 0 && account.usage_updated_at.map_or(true, |existing| up > existing) {
+                    account.usage_updated_at = Some(up);
+                }
+            }
+        }
+    }
 }
 

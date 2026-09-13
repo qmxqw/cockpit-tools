@@ -107,6 +107,7 @@ export interface CodexAccount {
     weekly_percentage?: number | null;
   };
   quota_error?: CodexQuotaErrorInfo;
+  usage_updated_at?: number | null;
   tags?: string[];
   created_at: number;
   last_used: number;

@@ -13,6 +13,7 @@ import { SingleSelectDropdown } from "../components/SingleSelectDropdown";
 import { CODEX_API_SERVICE_BIND_ID } from "../types/instance";
 import { COCKPIT_API_BASE_URL } from "../utils/codexProviderPresets";
 import { formatCodexQuotaPoolPercent, formatCodexQuotaPoolWindowLabel } from "../utils/codexQuotaPool";
+import { isCodexFreshReserveAccount } from "../utils/codexLocalAccessAccounts";
 import { resolveNewApiQuotaSnapshot } from "../services/modelProviderUsageService";
 import { CODEX_LOCAL_ACCESS_FALLBACK_API_KEY_MASK, formatCockpitApiInteger, formatCockpitApiTokenCount, getCockpitApiStatsRecord, getCockpitApiUsageRecord, getCodexAccountNoteTitle, hasCodexAccountNoteDetails, isPendingOAuthCodexAccount, isSponsorModelProvider, readCockpitApiNumber, readCockpitApiString, resolveApiKeyUsageMode, toCockpitApiRecord, type CockpitApiJsonRecord } from "./codexAccountsControllerModel";
 import type { useCodexAccountsBaseController } from "./useCodexAccountsBaseController";
@@ -21,6 +22,17 @@ import type { useCodexAccountsAccessController } from "./useCodexAccountsAccessC
 import type { useCodexAccountsLocalAccessController } from "./useCodexAccountsLocalAccessController";
 import type { useCodexAccountsOverviewController } from "./useCodexAccountsOverviewController";
 
+function formatDateOnly(timestamp?: number | null): string {
+  if (!timestamp) return "";
+  const date = new Date(timestamp * 1000);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
 /** 封装 useCodexAccountsPageController 的 useCodexAccountsRenderers 业务域状态与动作。 */
 export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCodexAccountsBaseController> & ReturnType<typeof useCodexAccountsOAuthController> & ReturnType<typeof useCodexAccountsAccessController> & ReturnType<typeof useCodexAccountsLocalAccessController> & ReturnType<typeof useCodexAccountsOverviewController>,
   | "accountIdLabel"
@@ -28,6 +40,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
   | "addingLocalAccessAccountId"
   | "apiKeyUsageDetailAccount"
   | "apiKeyUsageMap"
+  | "apiServingFirstAccountId"
   | "apiServiceAppSpeed"
   | "applyWindowStatsToQuotaItems"
   | "batchImportOpen"
@@ -171,6 +184,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
     addingLocalAccessAccountId,
     apiKeyUsageDetailAccount,
     apiKeyUsageMap,
+    apiServingFirstAccountId,
     apiServiceAppSpeed,
     applyWindowStatsToQuotaItems,
     batchImportOpen,
@@ -751,10 +765,17 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
           refreshingSubscriptionAccountId === account.id ||
           refreshing === account.id;
         const resetCreditControls = renderResetCreditControls(account);
+        const isApiServing = account.id === apiServingFirstAccountId;
+        const isFreshReserve = !isApiServing && isCodexFreshReserveAccount(account);
+        const cardBorderClass = isApiServing
+          ? "is-api-serving"
+          : isFreshReserve
+            ? "is-fresh-reserve"
+            : "";
         return (
           <div
             key={groupKey ? `${groupKey}-${account.id}` : account.id}
-            className={`codex-account-card ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""} ${isPendingOAuthAccount ? "pending-auth" : ""} ${isNewApiAccount ? "new-api-exclusive" : ""} ${isQuotaAwareApiKeyAccount ? "api-key-usage-account" : ""} ${isSponsorApiKeyAccount ? "sponsor-api-account" : ""}`}
+            className={`codex-account-card ${cardBorderClass} ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""} ${isPendingOAuthAccount ? "pending-auth" : ""} ${isNewApiAccount ? "new-api-exclusive" : ""} ${isQuotaAwareApiKeyAccount ? "api-key-usage-account" : ""} ${isSponsorApiKeyAccount ? "sponsor-api-account" : ""}`}
           >
             <div className="card-top">
               <div className="card-select">
@@ -1065,7 +1086,16 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
               </div>
             )}
             <div className="codex-card-bottom">
-              <span className="card-date">{formatDate(account.created_at)}</span>
+              <div className="card-dates">
+                <span className="card-date">
+                  {formatDateOnly(account.created_at)}
+                </span>
+                {account.usage_updated_at ? (
+                  <span className="card-date card-date--updated">
+                    {formatDate(account.usage_updated_at)}
+                  </span>
+                ) : null}
+              </div>
               {renderAccountSpeedSelect(account)}
               <div className="card-footer">
                 <div className="card-actions">

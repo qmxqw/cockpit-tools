@@ -14,6 +14,7 @@ import { useEscClose } from "../hooks/useEscClose";
 import { useEnterConfirm } from "../hooks/useEnterConfirm";
 import type { CodexAccount } from "../types/codex";
 import { CODEX_API_SERVICE_BIND_ID } from "../types/instance";
+import { resolveApiServingFirstAccountId } from "../utils/codexLocalAccessAccounts";
 import { createCodexOverviewAccountComparator, filterAndSortCodexOverviewAccounts } from "../utils/codexAccountOverview";
 import { buildPaginatedGroups, buildPaginationPageSizeStorageKey, isEveryIdSelected, usePagination } from "../hooks/usePagination";
 import { formatCockpitApiInteger, formatCockpitApiTokenCount, getCodexAccountNoteTitle, isPendingOAuthCodexAccount, resolveApiKeyUsageMode, shouldAutoHideBatchDeleteJob } from "./codexAccountsControllerModel";
@@ -266,6 +267,14 @@ export function useCodexAccountsOverviewController(context: Pick<ReturnType<type
   const overviewCurrentAccountId = localAccessLaunchCurrent
       ? null
       : (currentAccount?.id ?? null);
+
+  const apiServingFirstAccountId = useMemo(() => {
+    return resolveApiServingFirstAccountId(
+      accounts,
+      localAccessState,
+      localAccessCollection,
+    );
+  }, [accounts, localAccessState, localAccessCollection]);
   
     useEffect(() => {
       if (activeTab !== "overview") {
@@ -1730,6 +1739,7 @@ export function useCodexAccountsOverviewController(context: Pick<ReturnType<type
       );
     };
   return {
+    apiServingFirstAccountId,
     applyWindowStatsToQuotaItems,
     authFailedExportAccountIds,
     buildAccountLaunchPreviewActions,
