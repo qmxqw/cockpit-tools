@@ -2858,6 +2858,29 @@ pub fn update_task_after_run(
     };
     task.last_duration_ms = total_duration;
     task.updated_at = now_ts();
+
+    let processed_count = records.len();
+    if processed_count > 0 {
+        let history = load_history().unwrap_or_default();
+        if let Some(next_name) = crate::modules::codex_wakeup_scheduler::evaluate_loop_task_name_after_run(
+            &task.name,
+            records,
+            &history,
+            chrono::Local::now().date_naive(),
+        ) {
+            logger::log_info(&format!(
+                "[CodexWakeup] LOOP 任务更新名称: {} -> {}",
+                task.name, next_name
+            ));
+            task.name = next_name;
+        } else if crate::modules::codex_wakeup_scheduler::parse_loop_task_spec(&task.name).is_some() {
+            logger::log_info(&format!(
+                "[CodexWakeup] LOOP 任务检测到3天内首次失败账号，今日内保持重试，暂不改名: {}",
+                task.name
+            ));
+        }
+    }
+
     task.next_run_at = crate::modules::codex_wakeup_scheduler::calculate_next_run_at(task);
     save_state(&state)?;
     Ok(())
