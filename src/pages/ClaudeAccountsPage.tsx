@@ -2796,15 +2796,6 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
 
   return (
     <div className="ghcp-accounts-page codex-accounts-page claude-accounts-page">
-      <div className="page-top-strip">
-        <div className="page-top-strip-left">
-          <span className="page-top-strip-label">
-            {t('settings.general.account', 'Accounts')}
-          </span>
-          <ManualHelpIconButton className="platform-header-help" />
-        </div>
-        <div className="page-top-strip-right-placeholder" aria-hidden="true" />
-      </div>
       <div className="page-tabs-row page-tabs-center page-tabs-row-with-leading">
         <div className="page-tabs-leading">
           <PlatformGroupSwitcher
@@ -2814,6 +2805,7 @@ export function ClaudeAccountsPage({ subPlatform = 'desktop' }: ClaudeAccountsPa
             currentGroupId={currentPlatformGroup?.id ?? null}
             activePlatformId={claudePlatformId}
           />
+          <ManualHelpIconButton className="platform-header-help" />
         </div>
         <div className="page-tabs filter-tabs claude-page-tabs">
           {claudeTopTabs.map((tab) => (

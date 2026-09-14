@@ -92,40 +92,31 @@ export function OverviewTabsHeader({
   ];
 
   return (
-    <>
-      <div className="page-top-strip">
-        <div className="page-top-strip-left">
-          <span className="page-top-strip-label">
-            {t('settings.general.account', 'Accounts')}
-          </span>
-          <ManualHelpIconButton className="platform-header-help" onClick={onOpenManual} />
-        </div>
-        <div className="page-top-strip-right">
-          <AntigravityInstalledVersionBadge />
-        </div>
+    <div className="page-tabs-row page-tabs-center page-tabs-row-with-leading">
+      <div className="page-tabs-leading">
+        <PlatformGroupSwitcher
+          currentPlatformId={currentPlatformId}
+          currentLabel={currentDisplayName}
+          options={switchOptions}
+          currentGroupId={currentGroup?.id ?? null}
+        />
+        <ManualHelpIconButton className="platform-header-help" onClick={onOpenManual} />
       </div>
-      <div className="page-tabs-row page-tabs-center page-tabs-row-with-leading">
-        <div className="page-tabs-leading">
-          <PlatformGroupSwitcher
-            currentPlatformId={currentPlatformId}
-            currentLabel={currentDisplayName}
-            options={switchOptions}
-            currentGroupId={currentGroup?.id ?? null}
-          />
-        </div>
-        <div className="page-tabs filter-tabs">
-          {tabs.map((tab) => (
-            <button
-              key={tab.key}
-              className={`filter-tab${active === tab.key ? ' active' : ''}`}
-              onClick={() => onNavigate?.(tab.key)}
-            >
-              {tab.icon}
-              <span>{tab.label}</span>
-            </button>
-          ))}
-        </div>
+      <div className="page-tabs filter-tabs">
+        {tabs.map((tab) => (
+          <button
+            key={tab.key}
+            className={`filter-tab${active === tab.key ? ' active' : ''}`}
+            onClick={() => onNavigate?.(tab.key)}
+          >
+            {tab.icon}
+            <span>{tab.label}</span>
+          </button>
+        ))}
       </div>
-    </>
+      <div className="page-tabs-trailing">
+        <AntigravityInstalledVersionBadge />
+      </div>
+    </div>
   );
 }

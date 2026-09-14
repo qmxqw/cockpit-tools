@@ -283,16 +283,6 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
   } = props;
   return (
     <div className="codex-api-service-page">
-      <div className="page-top-strip">
-        <div className="page-top-strip-left">
-          <span className="page-top-strip-label">
-            {t("settings.general.account", "Accounts")}
-          </span>
-          <ManualHelpIconButton className="platform-header-help" />
-        </div>
-        <div className="page-top-strip-right-placeholder" aria-hidden="true" />
-      </div>
-
       <div className="page-tabs-row page-tabs-center page-tabs-row-with-leading">
         <div className="page-tabs-leading">
           <PlatformGroupSwitcher
@@ -309,6 +299,7 @@ export function CodexApiServiceView(props: CodexApiServiceViewProps) {
             options={switchOptions}
             currentGroupId={currentGroup?.id ?? null}
           />
+          <ManualHelpIconButton className="platform-header-help" />
         </div>
         <div className="page-tabs filter-tabs">
           {serviceTabs.map((tab) => (

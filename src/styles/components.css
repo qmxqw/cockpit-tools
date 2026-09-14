@@ -549,6 +549,14 @@
   justify-self: start;
   display: inline-flex;
   align-items: center;
+  gap: 8px;
+}
+
+.page-tabs-trailing {
+  grid-column: 3;
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
 }
 
 .page-tabs-row-with-leading .page-tabs {
@@ -877,7 +885,8 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
   }
 
   .page-tabs-leading,
-  .page-tabs-row-with-leading .page-tabs {
+  .page-tabs-row-with-leading .page-tabs,
+  .page-tabs-trailing {
     grid-column: 1;
   }
 
@@ -887,6 +896,10 @@ html[data-reduced-motion="true"] .platform-group-switcher-trigger.is-open .platf
 
   .page-tabs-row-with-leading .page-tabs {
     justify-self: center;
+  }
+
+  .page-tabs-trailing {
+    justify-self: end;
   }
 
   .page-tabs-leading .platform-group-switcher-trigger {

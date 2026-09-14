@@ -233,6 +233,36 @@ const RENDERABLE_PAGE_VALUES: readonly Page[] = [
 const RENDERABLE_PAGE_SET = new Set<string>(RENDERABLE_PAGE_VALUES);
 
 const TOP_PROMO_DEFAULT_EXCLUDED_PAGES: readonly Page[] = ['api-relay', 'settings'];
+// Account management already needs dense, task-focused vertical space. Keep the
+// app-wide promotion layer out of every account-management route, regardless of
+// a remote ad's individual page or platform targeting.
+const TOP_PROMO_ACCOUNT_MANAGEMENT_PAGES = new Set<Page>([
+  'overview',
+  'codex',
+  'claude',
+  'claude-cli',
+  'codex-api-service',
+  'zed',
+  'github-copilot',
+  'windsurf',
+  'kiro',
+  'cursor',
+  'grok',
+  'codebuddy',
+  'codebuddy-cn',
+  'qoder',
+  'zcode',
+  'trae',
+  'trae-solo',
+  'trae-cn',
+  'trae-solo-cn',
+  'workbuddy',
+  'codex-instances',
+  'instances',
+  'accounts',
+  'wakeup',
+  'verification',
+]);
 const TOP_PROMO_PAGE_PLATFORM_TARGETS: Partial<Record<Page, readonly string[]>> = {
   overview: ['antigravity', 'antigravity-ide'],
   instances: ['antigravity', 'antigravity-ide'],
@@ -3976,7 +4006,9 @@ function MainApp() {
       </Suspense>
 
       <div className="main-wrapper">
-        {topRightAdVisible && visibleTopCenterPromoAds.length > 0 ? (
+        {topRightAdVisible
+        && !TOP_PROMO_ACCOUNT_MANAGEMENT_PAGES.has(page)
+        && visibleTopCenterPromoAds.length > 0 ? (
           <div className="app-global-promo-layer" aria-hidden={false}>
             <TopCenterPromoBanner ads={visibleTopCenterPromoAds} reserveWhenEmpty={false} />
           </div>
