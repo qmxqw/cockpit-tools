@@ -2720,3 +2720,39 @@ pub(crate) fn load_accounts_last_serviced_at_ms() -> std::collections::HashMap<S
 
     rows.flatten().collect()
 }
+
+pub(crate) fn query_last_serving_account_id_from_logs(
+    candidate_ids: Option<&[String]>,
+) -> Option<String> {
+    let conn = open_local_access_logs_db().ok()?;
+    if let Some(candidates) = candidate_ids {
+        if candidates.is_empty() {
+            return None;
+        }
+        let placeholders = candidates.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT account_id FROM request_logs WHERE account_id IN ({}) AND trim(account_id) != '' ORDER BY timestamp DESC LIMIT 1",
+            placeholders
+        );
+        if let Ok(mut stmt) = conn.prepare(&sql) {
+            let params = rusqlite::params_from_iter(candidates.iter());
+            if let Ok(account_id) = stmt.query_row(params, |row| row.get::<_, String>(0)) {
+                let trimmed = account_id.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT account_id FROM request_logs WHERE trim(account_id) != '' ORDER BY timestamp DESC LIMIT 1",
+        )
+        .ok()?;
+    stmt.query_row([], |row| row.get::<_, String>(0))
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+

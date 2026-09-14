@@ -1850,6 +1850,14 @@ async fn ensure_runtime_loaded_without_start_with_profile_restore(
             runtime.stats = loaded_stats;
             if let Some(collection) = next_collection.clone() {
                 sync_runtime_collection(&mut runtime, collection);
+                if runtime.active_serving_account_id.is_none() {
+                    let candidate_ids = runtime
+                        .collection
+                        .as_ref()
+                        .map(|col| col.account_ids.as_slice());
+                    runtime.active_serving_account_id =
+                        query_last_serving_account_id_from_logs(candidate_ids);
+                }
             } else {
                 runtime.loaded = true;
                 runtime.collection = None;

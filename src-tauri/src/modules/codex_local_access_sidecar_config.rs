@@ -224,6 +224,19 @@ struct SidecarAccountStatus {
     reason_message: String,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SidecarAuthSelectedEvent {
+    #[serde(default)]
+    request_id: String,
+    #[serde(default)]
+    account_id: String,
+    #[serde(default)]
+    account_email: String,
+    #[serde(default)]
+    model: String,
+}
+
 fn local_access_sidecar_dir() -> Result<PathBuf, String> {
     Ok(account::get_data_dir()?.join(CODEX_LOCAL_ACCESS_SIDECAR_DIR))
 }

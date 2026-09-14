@@ -520,23 +520,20 @@ export function resolveApiServingFirstAccountId(
   const poolIds = localAccessCollection?.accountIds || [];
   if (poolIds.length === 0) return null;
   const poolSet = new Set(poolIds);
-  const candidates = accounts.filter((a) => poolSet.has(a.id));
-  if (candidates.length === 0) return null;
-  const available = candidates.filter((a) => {
-    const health = localAccessState?.accountHealth?.find(
-      (item) => item.accountId === a.id,
-    );
-    return health ? health.available !== false : true;
-  });
-  const eligible = available.length > 0 ? available : candidates;
-  const sorted = [...eligible].sort((a, b) =>
-    compareCodexAccountsByRoutingPriority(a, b, {
-      strategy: localAccessCollection?.routingStrategy || "auto",
-      customRules: localAccessCollection?.customRoutingRules || [],
-      leftOriginalIndex: poolIds.indexOf(a.id),
-      rightOriginalIndex: poolIds.indexOf(b.id),
-    }),
-  );
-  return sorted[0]?.id || null;
+
+  const activeServingId = localAccessState?.activeServingAccountId?.trim();
+  if (activeServingId && poolSet.has(activeServingId)) {
+    const candidate = accounts.find((a) => a.id === activeServingId);
+    if (candidate) {
+      const health = localAccessState?.accountHealth?.find(
+        (item) => item.accountId === activeServingId,
+      );
+      if (!health || health.available !== false) {
+        return activeServingId;
+      }
+    }
+  }
+
+  return null;
 }
 

@@ -1185,7 +1185,7 @@ export function CodexLocalAccessModal({
       currentIds.map((id, index) => [id, index]),
     );
 
-    return currentIds
+    const list = currentIds
       .map((accountId) => {
         const account = localAccessAccounts.find(
           (item) => item.id === accountId,
@@ -1208,11 +1208,29 @@ export function CodexLocalAccessModal({
           rightOriginalIndex: originalIndexById.get(right.account.id) ?? 0,
         }),
       );
+
+    const activeServingId = state?.activeServingAccountId?.trim();
+    if (!activeServingId || list.length <= 1) {
+      return list;
+    }
+    const activeIndex = list.findIndex(
+      (item) => item.account.id === activeServingId,
+    );
+    if (activeIndex > 0) {
+      const active = list[activeIndex];
+      return [
+        active,
+        ...list.slice(0, activeIndex),
+        ...list.slice(activeIndex + 1),
+      ];
+    }
+    return list;
   }, [
     collection?.accountIds,
     collection?.customRoutingRules,
     localAccessAccounts,
     routingStrategy,
+    state?.activeServingAccountId,
     t,
     windowStatsByAccountId,
   ]);

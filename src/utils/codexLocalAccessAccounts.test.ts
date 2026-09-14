@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   compareCodexAccountsByRoutingPriority,
+  resolveApiServingFirstAccountId,
   resolveCodexPlanRank,
 } from "./codexLocalAccessAccounts.ts";
 import type { CodexAccount } from "../types/codex.ts";
@@ -234,4 +235,23 @@ test("0% quota account is placed behind non-zero accounts even if marked preferr
     ["normal-nonzero", "zero-preferred"],
   );
 });
+
+test("resolveApiServingFirstAccountId respects backend activeServingAccountId", () => {
+  const acc1 = createMockAccount("acc-1", { email: "acc1@test.com" });
+  const acc2 = createMockAccount("acc-2", { email: "acc2@test.com" });
+
+  const state = {
+    running: true,
+    activeServingAccountId: "acc-2",
+  } as any;
+
+  const collection = {
+    enabled: true,
+    accountIds: ["acc-1", "acc-2"],
+  } as any;
+
+  const resolved = resolveApiServingFirstAccountId([acc1, acc2], state, collection);
+  assert.equal(resolved, "acc-2");
+});
+
 

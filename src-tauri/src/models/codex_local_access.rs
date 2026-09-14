@@ -923,6 +923,7 @@ pub struct CodexLocalAccessState {
     pub account_health: Vec<CodexLocalAccessAccountHealth>,
     pub account_pool_health: Vec<CodexLocalAccessAccountPoolHealth>,
     pub quota_reserve_status: Option<CodexLocalAccessQuotaReserveStatus>,
+    pub active_serving_account_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]

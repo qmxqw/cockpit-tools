@@ -877,15 +877,27 @@ export function useCodexApiServicePageController() {
   const totals = selectedStatsWindow?.totals;
   const memberIds = collection?.accountIds ?? [];
   const localAccessAccounts = useMemo(() => accounts, [accounts]);
-  const memberAccounts = useMemo(
-    () =>
-      memberIds
-        .map((accountId) =>
-          localAccessAccounts.find((account) => account.id === accountId),
-        )
-        .filter((account): account is CodexAccount => Boolean(account)),
-    [memberIds, localAccessAccounts],
-  );
+  const memberAccounts = useMemo(() => {
+    const list = memberIds
+      .map((accountId) =>
+        localAccessAccounts.find((account) => account.id === accountId),
+      )
+      .filter((account): account is CodexAccount => Boolean(account));
+    const activeServingId = state?.activeServingAccountId?.trim();
+    if (!activeServingId || list.length <= 1) {
+      return list;
+    }
+    const activeIndex = list.findIndex((account) => account.id === activeServingId);
+    if (activeIndex > 0) {
+      const active = list[activeIndex];
+      return [
+        active,
+        ...list.slice(0, activeIndex),
+        ...list.slice(activeIndex + 1),
+      ];
+    }
+    return list;
+  }, [memberIds, localAccessAccounts, state?.activeServingAccountId]);
   const memberAccountIds = useMemo(
     () => memberAccounts.map((account) => account.id),
     [memberAccounts],

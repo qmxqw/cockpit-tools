@@ -458,6 +458,7 @@ struct GatewayRuntime {
     sidecar_monitor_task: Option<tokio::task::JoinHandle<()>>,
     sidecar_generation: Option<u64>,
     sidecar_child: Option<Child>,
+    active_serving_account_id: Option<String>,
 }
 
 #[derive(Default)]

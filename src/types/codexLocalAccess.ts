@@ -418,6 +418,7 @@ export interface CodexLocalAccessState {
   accountHealth: CodexLocalAccessAccountHealth[];
   accountPoolHealth: CodexLocalAccessAccountPoolHealth[];
   quotaReserveStatus: CodexLocalAccessQuotaReserveStatus | null;
+  activeServingAccountId?: string | null;
 }
 
 export interface CodexLocalAccessAppendAccountSkipped {

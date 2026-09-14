@@ -391,6 +391,25 @@ fn emit_local_access_state_updated() {
     let _ = app.emit("codex-local-access-state-updated", ());
 }
 
+async fn update_sidecar_active_serving_account(account_id: &str) {
+    let account_id = account_id.trim();
+    if account_id.is_empty() {
+        return;
+    }
+    let changed = {
+        let mut runtime = gateway_runtime().lock().await;
+        if runtime.active_serving_account_id.as_deref() != Some(account_id) {
+            runtime.active_serving_account_id = Some(account_id.to_string());
+            true
+        } else {
+            false
+        }
+    };
+    if changed {
+        emit_local_access_state_updated();
+    }
+}
+
 const UNSCOPED_ACCOUNT_POOL_HEALTH_KEY: &str = "__unscoped__";
 
 fn account_pool_health_key(api_key_id: &str) -> String {
@@ -823,6 +842,7 @@ fn resolve_recorded_usage_model_id(
 
 async fn record_sidecar_usage_event(event: SidecarUsageEvent) {
     update_sidecar_account_health(&event).await;
+    update_sidecar_active_serving_account(&event.account_id).await;
     let account_id = non_empty_sidecar_string(&event.account_id);
     let account_email = non_empty_sidecar_string(&event.account_email);
     let api_key_id = non_empty_sidecar_string(&event.api_key_id);
@@ -944,6 +964,18 @@ async fn handle_sidecar_stdout_line(
                 error
             )),
         },
+        "auth_selected" => {
+            match serde_json::from_value::<SidecarAuthSelectedEvent>(value.clone()) {
+                Ok(event) => {
+                    update_sidecar_active_serving_account(&event.account_id).await;
+                }
+                Err(error) => logger::log_codex_api_warn(&format!(
+                    "[CodexLocalAccess] sidecar auth_selected 事件解析失败: {}",
+                    error
+                )),
+            }
+            logger::log_codex_api_info(&format!("[CodexLocalAccess][sidecar] {}", trimmed));
+        }
         "auth_result" => {
             match serde_json::from_value::<SidecarAuthResultEvent>(value.clone()) {
                 Ok(event) => update_sidecar_auth_result_health(&event, false).await,

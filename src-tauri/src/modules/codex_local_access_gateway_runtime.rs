@@ -1161,6 +1161,7 @@ fn build_state_snapshot_inner(
         account_health,
         account_pool_health,
         quota_reserve_status,
+        active_serving_account_id: runtime.active_serving_account_id.clone(),
     }
 }
 
