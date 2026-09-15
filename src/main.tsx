@@ -16,7 +16,7 @@ recordFrontendStage("script_loaded");
 setBootSplashStage("script_loaded");
 void initI18n();
 
-void hydrateUiPreferences().then(async () => {
+void (async () => {
   const { default: App } = await import("./App");
 
   const rootElement = document.getElementById("root");
@@ -39,4 +39,6 @@ void hydrateUiPreferences().then(async () => {
     setBootSplashStage("react_mounted");
     markFrontendReady("react_mounted");
   });
-});
+  // Durable preferences hydrate in the background; never block the first render.
+  void hydrateUiPreferences();
+})();

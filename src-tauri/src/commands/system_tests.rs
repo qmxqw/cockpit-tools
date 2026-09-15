@@ -317,6 +317,22 @@
     }
 
     #[test]
+    fn general_config_patch_rejects_retired_codex_client_policy() {
+        let mut config = UserConfig::default();
+        let before = serde_json::to_value(&config).expect("serialize config");
+        let updates = serde_json::json!({
+            "codex_cli_only_allow_app_server_clients": true,
+        })
+        .as_object()
+        .expect("patch object")
+        .clone();
+        let error = apply_general_config_updates(&mut config, &updates)
+            .expect_err("retired setting must not be writable");
+        assert!(error.contains("codex_cli_only_allow_app_server_clients"));
+        assert_eq!(serde_json::to_value(&config).expect("serialize unchanged config"), before);
+    }
+
+    #[test]
     fn unrelated_general_save_preserves_distinct_codex_quota_thresholds() {
         let mut config = UserConfig {
             codex_quota_alert_threshold: 20,

@@ -1,10 +1,15 @@
 import {
   ArrowRight,
   BarChart3,
+  Check,
+  ChevronDown,
   CircleAlert,
+  ImagePlus,
   KeyRound,
+  Link2,
   Play,
   RefreshCw,
+  Route,
   Save,
   Server,
   SlidersHorizontal,
@@ -45,6 +50,11 @@ import {
 import { forceRefreshCodexTokens } from "../../services/codexService";
 import { requestCodexOpenAddAccount } from "../../utils/codexAddAccountRequest";
 import { areCodexModelRoutingsEqual, resolveRoutingCatalog } from "../../utils/codexModelRoutingValue";
+import {
+  resolveInstanceEffectiveBindAccountId,
+  resolveLaunchPreviewRoutingBaseAccount,
+  resolveLaunchPreviewRoutingBindAccountId,
+} from "../../utils/codexLaunchPreviewRoutingBinding";
 import type {
   CodexAccount,
   CodexExperimentalModelDefinition,
@@ -57,6 +67,16 @@ import {
   isCodexApiKeyAccount,
   isStandardCodexOAuthAccount,
 } from "../../types/codex";
+import {
+  DEEPSEEK_ACCESS_MODE_CDP,
+  DEEPSEEK_ACCESS_MODE_DIRECT,
+  DEEPSEEK_ACCESS_MODE_GATEWAY,
+  isDeepSeekAccount,
+  isDeepSeekResponsesAccount,
+  resolveDeepSeekAccessMode,
+  type DeepSeekAccessMode,
+} from "../../utils/codexDeepSeekAccess";
+import { CodexImageAccountPickerModal } from "./CodexImageAccountPickerModal";
 import { getCodexJwtExpiration } from "../../utils/codexSwitchAuthFailure";
 import type { UnifiedQuotaMetric } from "../../presentation/platformAccountPresentation";
 import { buildCodexAccountPresentation } from "../../presentation/platformAccountPresentation";
@@ -116,10 +136,28 @@ export interface CodexLaunchPreviewAction {
   onAction?: () => void | Promise<void>;
 }
 
+/** 启动预览里选好的启动配置，确认时交给调用方落盘。 */
+export interface CodexLaunchPreviewLaunchOptions {
+  deepSeekAccessMode?: DeepSeekAccessMode;
+  imageGenerationAccountIds?: string[];
+}
+
+/** 启动预览里的 OAuth 绑定状态（仅 API Key 账号展示）。 */
+export interface CodexLaunchPreviewOAuthBinding {
+  /** 已绑定的 OAuth 账号展示名；未绑定时为 null。 */
+  boundAccountLabel?: string | null;
+  /** 绑定的 OAuth 账号需要重新授权。 */
+  needsReauth?: boolean;
+  reauthDescription?: string | null;
+}
+
 interface CodexLaunchPreviewModalProps {
   account?: CodexAccount | null;
   accountLabel: string;
   accountMetaLabel?: string;
+  oauthBinding?: CodexLaunchPreviewOAuthBinding | null;
+  onBindOAuth?: () => void;
+  onReauthorizeOAuth?: () => void;
   summary?: CodexLaunchPreviewSummary;
   actions?: CodexLaunchPreviewAction[];
   instanceId?: string;
@@ -128,7 +166,10 @@ interface CodexLaunchPreviewModalProps {
   onInstanceChange?: (instanceId: string) => void | Promise<void>;
   mode?: "account" | "instance" | "apiService";
   onClose: () => void;
-  onExecute: (launchAfterSwitch: boolean) => Promise<boolean>;
+  onExecute: (
+    launchAfterSwitch: boolean,
+    launchOptions?: CodexLaunchPreviewLaunchOptions,
+  ) => Promise<boolean>;
 }
 
 interface ModelConfigSnapshot {
@@ -147,6 +188,9 @@ export function CodexLaunchPreviewModal({
   account,
   accountLabel,
   accountMetaLabel,
+  oauthBinding,
+  onBindOAuth,
+  onReauthorizeOAuth,
   summary,
   actions,
   instanceId = DEFAULT_CODEX_INSTANCE_ID,
@@ -194,6 +238,53 @@ export function CodexLaunchPreviewModal({
     [],
   );
   const [notice, setNotice] = useState<string | null>(null);
+  const initialImageGenerationAccountIds = useMemo(
+    () =>
+      (account?.api_image_generation_account_ids ?? []).filter(
+        (value): value is string =>
+          typeof value === "string" && value.trim().length > 0,
+      ),
+    [account?.api_image_generation_account_ids],
+  );
+  const [deepSeekAccessMode, setDeepSeekAccessMode] =
+    useState<DeepSeekAccessMode>(() =>
+      resolveDeepSeekAccessMode(account ?? undefined),
+    );
+  const [deepSeekAccessModeDialogOpen, setDeepSeekAccessModeDialogOpen] =
+    useState(false);
+  const [imageGenEnabled, setImageGenEnabled] = useState(
+    () => initialImageGenerationAccountIds.length > 0,
+  );
+  const [imageGenAccountIds, setImageGenAccountIds] = useState<string[]>(
+    () => initialImageGenerationAccountIds,
+  );
+  const [imageGenPickerOpen, setImageGenPickerOpen] = useState(false);
+  const [imageGenModeSwitchOpen, setImageGenModeSwitchOpen] = useState(false);
+  const accountId = account?.id ?? null;
+
+  useEffect(() => {
+    setDeepSeekAccessMode(resolveDeepSeekAccessMode(account ?? undefined));
+    setImageGenEnabled(initialImageGenerationAccountIds.length > 0);
+    setImageGenAccountIds(initialImageGenerationAccountIds);
+    // 只在切换账号时重置草稿，避免账号列表刷新覆盖用户正在编辑的内容。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
+  // 只有网关模式支持 GPT 生图；切到直连 / CDP 时自动取消勾选并清空账号。
+  const deepSeekImageGenAvailable =
+    deepSeekAccessMode === DEEPSEEK_ACCESS_MODE_GATEWAY;
+  useEffect(() => {
+    if (
+      !(account && isDeepSeekAccount(account)) ||
+      deepSeekImageGenAvailable ||
+      !imageGenEnabled
+    ) {
+      return;
+    }
+    setImageGenEnabled(false);
+    setImageGenAccountIds([]);
+  }, [account, deepSeekImageGenAvailable, imageGenEnabled]);
+
   const accounts = useCodexAccountStore((state) => state.accounts);
   const currentAccount = useCodexAccountStore((state) => state.currentAccount);
   const fetchAccounts = useCodexAccountStore((state) => state.fetchAccounts);
@@ -265,10 +356,17 @@ export function CodexLaunchPreviewModal({
       !modelConfigOpen &&
       !contextConfigOpen &&
       !imageModelConfigOpen &&
+      !deepSeekAccessModeDialogOpen &&
+      !imageGenPickerOpen &&
+      !imageGenModeSwitchOpen &&
       !manualRefreshResult,
     requestClose,
   );
   useEscClose(imageModelConfigOpen, () => setImageModelConfigOpen(false));
+  useEscClose(deepSeekAccessModeDialogOpen, () =>
+    setDeepSeekAccessModeDialogOpen(false),
+  );
+  useEscClose(imageGenModeSwitchOpen, () => setImageGenModeSwitchOpen(false));
 
   const applyLoadedConfig = useCallback((config: CodexQuickConfig) => {
     setLoadedConfig(config);
@@ -346,19 +444,49 @@ export function CodexLaunchPreviewModal({
     [accounts, routingRoutes],
   );
   const effectiveLaunchAccount = account ?? currentAccount;
+  // 混合模型路由只在实例绑定「可直接登录的 OAuth 订阅账号」时生效。
+  // 预览/切换到一个普通账号（API Key、API 服务等）时，路由必须自动让位：
+  // 不再把实例绑定改回 OAuth 底座账号，也不能用路由校验拦住这次切换。
+  const launchSubjectIsOAuthAccount = Boolean(
+    account
+      ? isStandardCodexOAuthAccount(account)
+      : mode === "apiService"
+        ? false
+        : currentAccount && isStandardCodexOAuthAccount(currentAccount),
+  );
+  const routingEnabledForSave = routingEnabled && launchSubjectIsOAuthAccount;
+  // 后端保存路由配置时校验的是「目标实例当前生效的绑定账号」，不是正在预览的账号，
+  // 所以必须按实例当前绑定判断是否需要一并下发路由底座账号（与实例表单行为一致）。
+  const instanceEffectiveBindAccountId = useMemo(
+    () =>
+      resolveInstanceEffectiveBindAccountId({
+        isDefaultInstance: instanceId === DEFAULT_CODEX_INSTANCE_ID,
+        followLocalAccount: Boolean(selectedInstance?.followLocalAccount),
+        bindAccountId: selectedInstance?.bindAccountId ?? null,
+        localCurrentAccountId: currentAccount?.id ?? null,
+      }),
+    [currentAccount?.id, instanceId, selectedInstance],
+  );
   const mixedRoutingOAuthAccount = useMemo(() => {
-    if (!routingEnabled) return null;
-    if (effectiveLaunchAccount && isStandardCodexOAuthAccount(effectiveLaunchAccount)) {
-      return effectiveLaunchAccount;
-    }
-    return accounts.find((item) => isStandardCodexOAuthAccount(item)) ?? null;
-  }, [accounts, effectiveLaunchAccount, routingEnabled]);
-  const mixedRoutingBindAccountId =
-    routingEnabled && mixedRoutingOAuthAccount?.id !== effectiveLaunchAccount?.id
-      ? mixedRoutingOAuthAccount?.id
-      : undefined;
+    if (!routingEnabledForSave) return null;
+    return resolveLaunchPreviewRoutingBaseAccount(
+      accounts,
+      effectiveLaunchAccount,
+      instanceEffectiveBindAccountId,
+    );
+  }, [
+    accounts,
+    effectiveLaunchAccount,
+    instanceEffectiveBindAccountId,
+    routingEnabledForSave,
+  ]);
+  const mixedRoutingBindAccountId = resolveLaunchPreviewRoutingBindAccountId({
+    routingEnabled: routingEnabledForSave,
+    routingBaseAccountId: mixedRoutingOAuthAccount?.id ?? null,
+    instanceEffectiveBindAccountId,
+  });
   const routingBindingNeedsRepair =
-    routingEnabled && mixedRoutingOAuthAccount == null;
+    routingEnabledForSave && mixedRoutingOAuthAccount == null;
   const contextOverridePreset = resolveCodexContextOverridePreset(
     contextOverrideEnabled,
     contextWindowInput,
@@ -366,8 +494,12 @@ export function CodexLaunchPreviewModal({
   );
 
   const nextModelRouting = useMemo(
-    () => buildCodexModelRoutingValue(routingEnabled, normalizedRoutingRoutes),
-    [normalizedRoutingRoutes, routingEnabled],
+    () =>
+      buildCodexModelRoutingValue(
+        routingEnabledForSave,
+        normalizedRoutingRoutes,
+      ),
+    [normalizedRoutingRoutes, routingEnabledForSave],
   );
   const routingDirty = useMemo(
     () =>
@@ -447,7 +579,20 @@ export function CodexLaunchPreviewModal({
       setError(t("codex.experimentalModelCatalog.models.validation.autoCompactRange"));
       return false;
     }
-    if (routingEnabled) {
+    // 只有本次保存/启动仍然启用路由时才校验路由底座；
+    // 目标是普通账号（API Key / API 服务）时路由会在保存时自动关闭，不能再拦住启动。
+    if (routingEnabledForSave) {
+      // 与实例表单一致：没有可直接登录的 OAuth 订阅账号时直接给出可读提示，
+      // 不要等后端用实例旧绑定校验失败后再抛出难懂的报错。
+      if (!mixedRoutingOAuthAccount) {
+        setError(
+          t(
+            "instances.form.modelRouting.oauthRequired",
+            "混合模型路由需要绑定一个直接登录的 OAuth 订阅账号。",
+          ),
+        );
+        return false;
+      }
       if (routingRoutes.length === 0) {
         setError(
           t(
@@ -494,17 +639,15 @@ export function CodexLaunchPreviewModal({
     setError(null);
     try {
       let nextModels = models;
-      let nextCatalogEnabled = catalogEnabled;
-      if (routingEnabled) {
+      if (routingEnabledForSave) {
         nextModels = syncExperimentalModelsWithRouting(
           models,
           normalizedRoutingRoutes,
           accounts,
           true,
         );
-        nextCatalogEnabled = true;
       }
-      const nextCatalog = resolveRoutingCatalog(nextModels, nextCatalogEnabled, defaultModelId);
+      const nextCatalog = resolveRoutingCatalog(nextModels, catalogEnabled, defaultModelId);
       const saved = routingDirty
         ? (
             await saveCodexInstanceConfiguration({
@@ -566,7 +709,9 @@ export function CodexLaunchPreviewModal({
     nextModelRouting,
     routingDirty,
     routingEnabled,
+    routingEnabledForSave,
     mixedRoutingBindAccountId,
+    mixedRoutingOAuthAccount,
     normalizedRoutingRoutes,
     setError,
     t,
@@ -587,14 +732,34 @@ export function CodexLaunchPreviewModal({
       setNotice(null);
       setError(null);
       try {
-        const started = await onExecute(launchAfterSwitch);
+        const launchOptions: CodexLaunchPreviewLaunchOptions | undefined =
+          account && isDeepSeekAccount(account)
+            ? {
+                deepSeekAccessMode,
+                imageGenerationAccountIds: imageGenEnabled
+                  ? imageGenAccountIds.filter((id) =>
+                      accounts.some((item) => item.id === id),
+                    )
+                  : [],
+              }
+            : undefined;
+        const started = await onExecute(launchAfterSwitch, launchOptions);
         if (!started) setExecuting(null);
       } catch (executeError) {
         setError(String(executeError).replace(/^Error:\s*/, ""));
         setExecuting(null);
       }
     },
-    [busy, onExecute, persistDraft, setError],
+    [
+      accounts,
+      busy,
+      deepSeekAccessMode,
+      imageGenAccountIds,
+      imageGenEnabled,
+      onExecute,
+      persistDraft,
+      setError,
+    ],
   );
 
   const unavailable =
@@ -610,6 +775,13 @@ export function CodexLaunchPreviewModal({
     t("codex.experimentalModelCatalog.models.followOfficial", "跟随官方");
 
   const isApiKeySubject = Boolean(account && isCodexApiKeyAccount(account));
+  // DeepSeek 走自己的模型目录与 API Key 鉴权：不显示 Token 刷新与官方模型管理。
+  const isDeepSeekSubject = Boolean(account && isDeepSeekAccount(account));
+  const canChooseDeepSeekAccessMode = Boolean(
+    account && isDeepSeekResponsesAccount(account),
+  );
+  const imageGenAvailable = deepSeekImageGenAvailable;
+
   const accountPresentation = useMemo(
     () => (account ? buildCodexAccountPresentation(account, t) : null),
     [account, t],
@@ -798,7 +970,9 @@ export function CodexLaunchPreviewModal({
 
   const openModelConfig = useCallback(async () => {
     if (busy || unavailable) return;
-    if (!catalogEnabled) {
+    // 混合模型路由需要实例自己的可见模型清单，但不应替用户开启「模型管理」：
+    // 这种情况下只打开编辑器维护路由模型，开关状态保持不变。
+    if (!catalogEnabled && !routingEnabled) {
       const confirmed = await confirmDialog(
         t(
           "codex.modelManagement.enableConfirmDescription",
@@ -823,7 +997,9 @@ export function CodexLaunchPreviewModal({
       })),
       defaultModelId,
     });
-    setCatalogEnabled(true);
+    if (!routingEnabled) {
+      setCatalogEnabled(true);
+    }
     setNotice(null);
     setError(null);
     setModelConfigOpen(true);
@@ -832,6 +1008,7 @@ export function CodexLaunchPreviewModal({
     catalogEnabled,
     defaultModelId,
     models,
+    routingEnabled,
     setError,
     unavailable,
   ]);
@@ -865,7 +1042,10 @@ export function CodexLaunchPreviewModal({
   const closeModelConfig = useCallback(
     (apply: boolean) => {
       if (apply) {
-        setCatalogEnabled(true);
+        // 混合模型路由下这里只应用路由模型改动，不替用户打开「模型管理」。
+        if (!routingEnabled) {
+          setCatalogEnabled(true);
+        }
       } else if (modelConfigSnapshot) {
         setCatalogEnabled(modelConfigSnapshot.enabled);
         setModels(modelConfigSnapshot.models);
@@ -875,7 +1055,7 @@ export function CodexLaunchPreviewModal({
       setModelConfigOpen(false);
       setModelsError(null);
     },
-    [modelConfigSnapshot],
+    [modelConfigSnapshot, routingEnabled],
   );
 
   const openContextConfig = useCallback(() => {
@@ -997,6 +1177,66 @@ export function CodexLaunchPreviewModal({
         </button>
       )}
     </div>
+  );
+
+  const deepSeekAccessModeLabel =
+    deepSeekAccessMode === DEEPSEEK_ACCESS_MODE_DIRECT
+      ? t("codex.deepSeek.start.directMode", "直连官方")
+      : deepSeekAccessMode === DEEPSEEK_ACCESS_MODE_CDP
+        ? t("codex.deepSeek.start.cdpMode", "CDP 注入")
+        : t("codex.deepSeek.start.gatewayMode", "网关列出");
+
+  const deepSeekAccessModeOptions: {
+    id: DeepSeekAccessMode;
+    label: string;
+    pros: string;
+    cons: string;
+  }[] = [
+    {
+      id: DEEPSEEK_ACCESS_MODE_GATEWAY,
+      label: t("codex.deepSeek.start.gatewayMode", "网关列出"),
+      pros: t(
+        "codex.launchPreview.accessModeGatewayPros",
+        "优点：支持在 Codex 内切换模型，可绑定 OAuth 的 GPT 账号并转发生图。",
+      ),
+      cons: t(
+        "codex.launchPreview.accessModeGatewayCons",
+        "缺点：需要实例本地网关，速度略低于直连。",
+      ),
+    },
+    {
+      id: DEEPSEEK_ACCESS_MODE_CDP,
+      label: t("codex.deepSeek.start.cdpMode", "CDP 注入"),
+      pros: t(
+        "codex.launchPreview.accessModeCdpPros",
+        "优点：速度与直连一致，可在官方模型列表切换 Flash / Pro。",
+      ),
+      cons: t(
+        "codex.launchPreview.accessModeCdpCons",
+        "缺点：需要注入官方客户端，不支持绑定 OAuth 与生图转发。",
+      ),
+    },
+    {
+      id: DEEPSEEK_ACCESS_MODE_DIRECT,
+      label: t("codex.deepSeek.start.directMode", "直连官方"),
+      pros: t(
+        "codex.launchPreview.accessModeDirectPros",
+        "优点：不经网关，速度最快。",
+      ),
+      cons: t(
+        "codex.launchPreview.accessModeDirectCons",
+        "缺点：不能在 Codex 内切换模型，也没有 OAuth 与生图转发。",
+      ),
+    },
+  ];
+
+  const selectedImageGenAccounts = imageGenAccountIds
+    .map((id) => accounts.find((item) => item.id === id))
+    .filter((item): item is CodexAccount => Boolean(item));
+  // 保存时以列表里勾选的现存账号为准：账号总览里删掉的账号不再参与提交，
+  // 否则后端会逐个校验并报「生图账号不存在」。
+  const existingImageGenAccountIds = selectedImageGenAccounts.map(
+    (item) => item.id,
   );
 
   return (
@@ -1200,6 +1440,113 @@ export function CodexLaunchPreviewModal({
             </section>
 
             <div className="codex-launch-preview-tool-list">
+              {isDeepSeekSubject && (
+                <section className="codex-launch-preview-tool-row">
+                  <div className="codex-launch-preview-tool-icon">
+                    <Route size={16} />
+                  </div>
+                  <div className="codex-launch-preview-tool-copy">
+                    <h3>{t("codex.launchPreview.accessModeTitle", "启动方式")}</h3>
+                    <p>
+                      {t(
+                        "codex.launchPreview.accessModeDescription",
+                        "选择 DeepSeek 的启动方式；不同方式在模型切换、OAuth 与生图转发上不同。",
+                      )}
+                    </p>
+                    {!canChooseDeepSeekAccessMode && (
+                      <div className="codex-launch-preview-tool-meta">
+                        <span>
+                          {t(
+                            "codex.deepSeek.start.chatOnlyHint",
+                            "Chat Completions 只能走本地网关，并在此选择启动模型。",
+                          )}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm codex-launch-preview-tool-action codex-launch-preview-dropdown-trigger"
+                    onClick={() => setDeepSeekAccessModeDialogOpen(true)}
+                    disabled={busy || !canChooseDeepSeekAccessMode}
+                  >
+                    <span>{deepSeekAccessModeLabel}</span>
+                    <ChevronDown size={14} />
+                  </button>
+                </section>
+              )}
+
+              {isDeepSeekSubject && (
+                <section className="codex-launch-preview-tool-row">
+                  <div className="codex-launch-preview-tool-icon">
+                    <ImagePlus size={16} />
+                  </div>
+                  <div className="codex-launch-preview-tool-copy">
+                    <h3>
+                      {t("codex.launchPreview.imageGenTitle", "启用 GPT 生图")}
+                    </h3>
+                    <p>
+                      {t(
+                        "codex.deepSeek.start.imageGenHint",
+                        "对话仍由该供应商的模型处理；生图走 gpt-image 原链路，由所选 GPT 账号执行并消耗其额度。",
+                      )}
+                    </p>
+                    <div className="codex-launch-preview-tool-meta">
+                      {imageGenEnabled && (
+                        <span className="is-enabled">
+                          {selectedImageGenAccounts.length > 0
+                            ? t("codex.deepSeek.start.imageGenSelected", {
+                                count: selectedImageGenAccounts.length,
+                                defaultValue: "已选 {{count}} 个账号",
+                              })
+                            : t(
+                                "codex.deepSeek.start.imageGenEmpty",
+                                "尚未选择账号",
+                              )}
+                        </span>
+                      )}
+                      {imageGenEnabled &&
+                        selectedImageGenAccounts.slice(0, 4).map((item) => (
+                          <span key={item.id}>
+                            {item.email || item.account_name || item.id}
+                          </span>
+                        ))}
+                    </div>
+                  </div>
+                  <div className="codex-launch-preview-tool-controls">
+                    <label className="codex-launch-preview-checkbox">
+                      <input
+                        type="checkbox"
+                        checked={imageGenEnabled}
+                        disabled={busy}
+                        onChange={(event) => {
+                          if (!event.target.checked) {
+                            setImageGenEnabled(false);
+                            setImageGenAccountIds([]);
+                            return;
+                          }
+                          if (!imageGenAvailable) {
+                            setImageGenModeSwitchOpen(true);
+                            return;
+                          }
+                          setImageGenEnabled(true);
+                          setImageGenPickerOpen(true);
+                        }}
+                      />
+                      <span>{t("common.enable", "启用")}</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn-outline btn-sm codex-launch-preview-tool-action"
+                      disabled={busy || !imageGenEnabled}
+                      onClick={() => setImageGenPickerOpen(true)}
+                    >
+                      {t("codex.deepSeek.start.imageGenPick", "选择 GPT 账号")}
+                    </button>
+                  </div>
+                </section>
+              )}
+
               {mode !== "apiService" &&
                 account &&
                 isStandardCodexOAuthAccount(account) &&
@@ -1213,7 +1560,7 @@ export function CodexLaunchPreviewModal({
                     onEnabledChange={(nextEnabled) => {
                       const catalog = resolveRoutingCatalog(
                         syncExperimentalModelsWithRouting(models, routingRoutes, accounts, nextEnabled),
-                        nextEnabled || catalogEnabled,
+                        catalogEnabled,
                         defaultModelId,
                       );
                       setCatalogEnabled(catalog.enabled);
@@ -1267,32 +1614,94 @@ export function CodexLaunchPreviewModal({
                   </button>
                 </section>
               )}
-              <section className="codex-launch-preview-tool-row">
-                <div className="codex-launch-preview-tool-icon">
-                  <RefreshCw size={16} />
-                </div>
-                <div className="codex-launch-preview-tool-copy">
-                  <h3>{t("codex.launchPreview.forceRefreshTitle")}</h3>
-                  <p>{t("codex.launchPreview.forceRefreshDescription")}</p>
-                  <div className="codex-launch-preview-tool-meta">
-                    <span>
-                      {account && isStandardCodexOAuthAccount(account)
-                        ? t("codex.launchPreview.forceRefreshReady")
-                        : t("codex.launchPreview.forceRefreshUnavailable")}
-                    </span>
+              {oauthBinding && account && isCodexApiKeyAccount(account) && (
+                <section className="codex-launch-preview-tool-row">
+                  <div className="codex-launch-preview-tool-icon">
+                    <Link2 size={16} />
                   </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-outline btn-sm codex-launch-preview-tool-action"
-                  onClick={() => void handleForceRefresh()}
-                  disabled={busy || !account || !isStandardCodexOAuthAccount(account)}
-                >
-                  {forceRefreshing
-                    ? t("codex.launchPreview.forceRefreshRunning")
-                    : t("codex.launchPreview.forceRefreshAction")}
-                </button>
-              </section>
+                  <div className="codex-launch-preview-tool-copy">
+                    <h3>{t("codex.api.oauthBinding.label", "OAuth 绑定")}</h3>
+                    <p>
+                      {t(
+                        "codex.launchPreview.oauthBindingHint",
+                        "绑定后启动与普通账号没有任何差异，可使用 OAuth 的全部能力（远端压缩，浏览器操作，各类插件等）；对话仍由当前 API Key 供应商处理。",
+                      )}
+                    </p>
+                    <div className="codex-launch-preview-tool-meta">
+                      <span>
+                        {oauthBinding.boundAccountLabel ||
+                          t("codex.api.oauthBinding.unbound", "未绑定")}
+                      </span>
+                      {oauthBinding.needsReauth && (
+                        <span
+                          className="codex-status-pill quota-error"
+                          title={oauthBinding.reauthDescription || undefined}
+                        >
+                          <CircleAlert size={12} />
+                          {t("codex.authError.badge", "授权异常")}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="codex-launch-preview-tool-controls">
+                    {oauthBinding.needsReauth && onReauthorizeOAuth && (
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm codex-launch-preview-tool-action"
+                        onClick={onReauthorizeOAuth}
+                        disabled={busy}
+                      >
+                        {t("common.reauthorize", "重新授权")}
+                      </button>
+                    )}
+                    {onBindOAuth && (
+                      <button
+                        type="button"
+                        className="btn btn-outline btn-sm codex-launch-preview-tool-action"
+                        onClick={onBindOAuth}
+                        disabled={busy}
+                      >
+                        {oauthBinding.boundAccountLabel
+                          ? t(
+                              "codex.launchPreview.oauthBindingChange",
+                              "更换",
+                            )
+                          : t("codex.api.oauthBinding.action", "绑定 OAuth")}
+                      </button>
+                    )}
+                  </div>
+                </section>
+              )}
+              {!isDeepSeekSubject && (
+                <section className="codex-launch-preview-tool-row">
+                  <div className="codex-launch-preview-tool-icon">
+                    <RefreshCw size={16} />
+                  </div>
+                  <div className="codex-launch-preview-tool-copy">
+                    <h3>{t("codex.launchPreview.forceRefreshTitle")}</h3>
+                    <p>{t("codex.launchPreview.forceRefreshDescription")}</p>
+                    <div className="codex-launch-preview-tool-meta">
+                      <span>
+                        {account && isStandardCodexOAuthAccount(account)
+                          ? t("codex.launchPreview.forceRefreshReady")
+                          : t("codex.launchPreview.forceRefreshUnavailable")}
+                      </span>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm codex-launch-preview-tool-action"
+                    onClick={() => void handleForceRefresh()}
+                    disabled={
+                      busy || !account || !isStandardCodexOAuthAccount(account)
+                    }
+                  >
+                    {forceRefreshing
+                      ? t("codex.launchPreview.forceRefreshRunning")
+                      : t("codex.launchPreview.forceRefreshAction")}
+                  </button>
+                </section>
+              )}
               <section className="codex-launch-preview-tool-row">
                 <div className="codex-launch-preview-tool-icon">
                   <SlidersHorizontal size={16} />
@@ -1340,58 +1749,68 @@ export function CodexLaunchPreviewModal({
                     : t("codex.contextOverride.adjust", "调整上下文")}
                 </button>
               </section>
-              <section className="codex-launch-preview-tool-row">
-                <div className="codex-launch-preview-tool-icon">
-                  <SlidersHorizontal size={16} />
-                </div>
-                <div className="codex-launch-preview-tool-copy">
-                  <h3>{t("codex.modelManagement.title", "模型管理")}</h3>
-                  <p>
-                    {catalogEnabled
-                      ? t(
-                          "codex.modelManagement.enabledDescription",
-                          "当前以配置模型目录为准，可添加或减少模型，不再自动跟随官方目录。",
-                        )
-                      : t(
-                          "codex.modelManagement.disabledDescription",
-                          "默认关闭；关闭时模型列表、顺序、默认模型和推理强度均跟随官方。",
-                        )}
-                  </p>
-                  <div className="codex-launch-preview-tool-meta">
-                    <span className={catalogEnabled ? "is-enabled" : ""}>
-                      {loading
-                        ? t("common.loading", "加载中...")
-                        : catalogEnabled
-                          ? t("codex.modelManagement.enabled", "已开启")
-                          : t("codex.modelManagement.disabled", "跟随官方")}
-                    </span>
-                    {catalogEnabled && (
-                      <span>
-                        {t("codex.launchPreview.defaultModel", "默认模型")}：
-                        {defaultModelLabel}
-                      </span>
-                    )}
-                    {catalogEnabled && models.length > 0 && (
-                      <span>
-                        {t("codex.api.modelCatalog.count", {
-                          count: models.length,
-                          defaultValue: "{{count}} 个模型",
-                        })}
-                      </span>
-                    )}
+              {!isDeepSeekSubject && (
+                <section className="codex-launch-preview-tool-row">
+                  <div className="codex-launch-preview-tool-icon">
+                    <SlidersHorizontal size={16} />
                   </div>
-                </div>
-                <button
-                  type="button"
-                  className="btn btn-outline btn-sm codex-launch-preview-tool-action"
-                  onClick={() => void openModelConfig()}
-                  disabled={busy || Boolean(unavailable)}
-                >
-                  {catalogEnabled
-                    ? t("codex.modelManagement.manage", "管理模型")
-                    : t("codex.modelManagement.enable", "开启模型管理")}
-                </button>
-              </section>
+                  <div className="codex-launch-preview-tool-copy">
+                    <h3>{t("codex.modelManagement.title", "模型管理")}</h3>
+                    <p>
+                      {catalogEnabled
+                        ? t(
+                            "codex.modelManagement.enabledDescription",
+                            "当前以配置模型目录为准，可添加或减少模型，不再自动跟随官方目录。",
+                          )
+                        : t(
+                            "codex.modelManagement.disabledDescription",
+                            "默认关闭；关闭时模型列表、顺序、默认模型和推理强度均跟随官方。",
+                          )}
+                    </p>
+                    {routingEnabled && (
+                      <p>
+                        {t(
+                          "codex.modelManagement.routingManagedHint",
+                          "混合模型路由只在实例运行时临时使用这份模型目录，停止后自动恢复；它不会改动这里的开关状态。",
+                        )}
+                      </p>
+                    )}
+                    <div className="codex-launch-preview-tool-meta">
+                      <span className={catalogEnabled ? "is-enabled" : ""}>
+                        {loading
+                          ? t("common.loading", "加载中...")
+                          : catalogEnabled
+                            ? t("codex.modelManagement.enabled", "已开启")
+                            : t("codex.modelManagement.disabled", "跟随官方")}
+                      </span>
+                      {catalogEnabled && (
+                        <span>
+                          {t("codex.launchPreview.defaultModel", "默认模型")}：
+                          {defaultModelLabel}
+                        </span>
+                      )}
+                      {catalogEnabled && models.length > 0 && (
+                        <span>
+                          {t("codex.api.modelCatalog.count", {
+                            count: models.length,
+                            defaultValue: "{{count}} 个模型",
+                          })}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-outline btn-sm codex-launch-preview-tool-action"
+                    onClick={() => void openModelConfig()}
+                    disabled={busy || Boolean(unavailable)}
+                  >
+                    {catalogEnabled
+                      ? t("codex.modelManagement.manage", "管理模型")
+                      : t("codex.modelManagement.enable", "开启模型管理")}
+                  </button>
+                </section>
+              )}
 
               <section className="codex-launch-preview-tool-row">
                 <div className="codex-launch-preview-tool-icon">
@@ -1516,6 +1935,158 @@ export function CodexLaunchPreviewModal({
           </div>
         </div>
       </div>
+
+      {deepSeekAccessModeDialogOpen && (
+        <div className="modal-overlay codex-launch-preview-refresh-overlay">
+          <div
+            className="modal codex-launch-preview-mode-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="codex-launch-preview-mode-title"
+          >
+            <div className="modal-header">
+              <h2 id="codex-launch-preview-mode-title">
+                {t("codex.launchPreview.accessModeTitle", "启动方式")}
+              </h2>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setDeepSeekAccessModeDialogOpen(false)}
+                aria-label={t("common.close", "关闭")}
+              >
+                <X />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="form-hint">
+                {t(
+                  "codex.launchPreview.accessModeDescription",
+                  "选择 DeepSeek 的启动方式；不同方式在模型切换、OAuth 与生图转发上不同。",
+                )}
+              </p>
+              <div className="codex-launch-preview-mode-list">
+                {deepSeekAccessModeOptions.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    className={`codex-launch-preview-mode-card ${
+                      deepSeekAccessMode === option.id ? "active" : ""
+                    }`}
+                    onClick={() => {
+                      setDeepSeekAccessMode(option.id);
+                      setDeepSeekAccessModeDialogOpen(false);
+                    }}
+                  >
+                    <span className="codex-launch-preview-mode-card-head">
+                      <span className="codex-launch-preview-mode-card-title">
+                        {option.label}
+                      </span>
+                      {deepSeekAccessMode === option.id && <Check size={15} />}
+                    </span>
+                    <span className="codex-launch-preview-mode-card-section">
+                      <span className="codex-launch-preview-mode-card-label is-pros">
+                        {t("codex.launchPreview.prosLabel", "优点：")}
+                      </span>
+                      <span className="codex-launch-preview-mode-card-pros">
+                        {option.pros}
+                      </span>
+                    </span>
+                    <span className="codex-launch-preview-mode-card-section">
+                      <span className="codex-launch-preview-mode-card-label is-cons">
+                        {t("codex.launchPreview.consLabel", "缺点：")}
+                      </span>
+                      <span className="codex-launch-preview-mode-card-cons">
+                        {option.cons}
+                      </span>
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {imageGenModeSwitchOpen && (
+        <div className="modal-overlay codex-launch-preview-refresh-overlay">
+          <div
+            className="modal codex-launch-preview-refresh-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="codex-launch-preview-imagegen-gateway-title"
+          >
+            <div className="modal-header">
+              <h2 id="codex-launch-preview-imagegen-gateway-title">
+                {t(
+                  "codex.launchPreview.imageGenSwitchTitle",
+                  "仅网关模式支持",
+                )}
+              </h2>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() => setImageGenModeSwitchOpen(false)}
+                aria-label={t("common.close", "关闭")}
+              >
+                <X />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="form-hint">
+                {t(
+                  "codex.launchPreview.imageGenSwitchDescription",
+                  "启用 GPT 生图需要先切换到「网关列出」模式，是否切换并勾选？",
+                )}
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button
+                type="button"
+                className="btn btn-secondary"
+                onClick={() => setImageGenModeSwitchOpen(false)}
+              >
+                {t("codex.launchPreview.imageGenSwitchNo", "否")}
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  setDeepSeekAccessMode(DEEPSEEK_ACCESS_MODE_GATEWAY);
+                  setImageGenEnabled(true);
+                  setImageGenModeSwitchOpen(false);
+                  setImageGenPickerOpen(true);
+                }}
+              >
+                {t("codex.launchPreview.imageGenSwitchYes", "是")}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {imageGenPickerOpen && (
+        <CodexImageAccountPickerModal
+          accounts={accounts}
+          selectedIds={existingImageGenAccountIds}
+          contextLabel={
+            accountPresentation?.displayName ||
+            account?.email ||
+            account?.id ||
+            ""
+          }
+          onCancel={() => {
+            setImageGenPickerOpen(false);
+            if (existingImageGenAccountIds.length === 0) {
+              setImageGenEnabled(false);
+            }
+          }}
+          onConfirm={(ids) => {
+            setImageGenPickerOpen(false);
+            setImageGenAccountIds(ids);
+            setImageGenEnabled(ids.length > 0);
+          }}
+        />
+      )}
 
       {imageModelConfigOpen && imageModelAction?.control && (
         <div className="modal-overlay codex-launch-preview-refresh-overlay">
@@ -1643,7 +2214,14 @@ export function CodexLaunchPreviewModal({
             <div className="modal-header">
               <div>
                 <h2>{t("codex.modelManagement.title", "模型管理")}</h2>
-                <p>{t("codex.modelManagement.enabledDescription")}</p>
+                <p>
+                  {routingEnabled && !catalogEnabled
+                    ? t(
+                        "codex.modelManagement.routingManagedHint",
+                        "混合模型路由只在实例运行时临时使用这份模型目录，停止后自动恢复；它不会改动这里的开关状态。",
+                      )
+                    : t("codex.modelManagement.enabledDescription")}
+                </p>
               </div>
               <button
                 type="button"
@@ -1695,19 +2273,21 @@ export function CodexLaunchPreviewModal({
               />
             </div>
             <div className="modal-footer">
-              <button
-                type="button"
-                className="btn btn-outline"
-                onClick={() => {
-                  setCatalogEnabled(false);
-                  setModelConfigSnapshot(null);
-                  setModelConfigOpen(false);
-                  setModelsError(null);
-                }}
-                disabled={busy}
-              >
-                {t("codex.modelManagement.disable", "关闭模型管理")}
-              </button>
+              {catalogEnabled && (
+                <button
+                  type="button"
+                  className="btn btn-outline"
+                  onClick={() => {
+                    setCatalogEnabled(false);
+                    setModelConfigSnapshot(null);
+                    setModelConfigOpen(false);
+                    setModelsError(null);
+                  }}
+                  disabled={busy}
+                >
+                  {t("codex.modelManagement.disable", "关闭模型管理")}
+                </button>
+              )}
               <button
                 type="button"
                 className="btn btn-secondary"

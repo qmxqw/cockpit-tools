@@ -2,6 +2,7 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -21,9 +22,6 @@ const connectionLifecycleErrorCode = ErrorCodeConnectionLifecycle
 // ErrorCodeForceCooldown marks failures that must enforce credential cooldown.
 const ErrorCodeForceCooldown = "force_cooldown"
 
-// ErrorCodeTransientRequestScoped permits bounded retries without cooling credentials.
-const ErrorCodeTransientRequestScoped = "transient_request_scoped"
-
 // Error describes an authentication related failure in a provider agnostic format.
 type Error struct {
 	// Code is a short machine readable identifier.
@@ -34,6 +32,41 @@ type Error struct {
 	Retryable bool `json:"retryable"`
 	// HTTPStatus optionally records an HTTP-like status code for the error.
 	HTTPStatus int `json:"http_status,omitempty"`
+}
+
+// IsTerminalAuthError checks if err or any error in its chain represents a permanent upstream auth failure.
+func IsTerminalAuthError(err error) bool {
+	if err == nil {
+		return false
+	}
+	type terminalAuthProvider interface {
+		IsTerminalAuth() bool
+	}
+	var tap terminalAuthProvider
+	if errors.As(err, &tap) && tap != nil {
+		return tap.IsTerminalAuth()
+	}
+	return false
+}
+
+type terminalAuthError struct {
+	*errorWithCause
+}
+
+func (e *terminalAuthError) IsTerminalAuth() bool {
+	return true
+}
+
+// NewTerminalAuthError wraps an *Error and cause as a terminal upstream authentication failure.
+func NewTerminalAuthError(err *Error, cause error) error {
+	if err == nil {
+		return nil
+	}
+	base := WithCause(err, cause)
+	if ewc, ok := base.(*errorWithCause); ok && ewc != nil {
+		return &terminalAuthError{errorWithCause: ewc}
+	}
+	return &terminalAuthError{errorWithCause: &errorWithCause{base: err, cause: cause}}
 }
 
 // Error implements the error interface.

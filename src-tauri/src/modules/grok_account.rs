@@ -2,7 +2,7 @@ use crate::models::grok::{
     GrokAccount, GrokAccountIndex, GrokAccountView, GrokAuthMode, GrokOAuthCompletePayload,
     GrokProductUsage, GrokQuota,
 };
-use crate::modules::{account, atomic_write, config, grok_oauth, logger, provider_current_state};
+use crate::modules::{account, config, grok_oauth, logger, provider_current_state};
 use chrono::{DateTime, Utc};
 use reqwest::header::{ACCEPT, AUTHORIZATION, USER_AGENT};
 use serde_json::{Map, Value};
@@ -298,31 +298,22 @@ fn load_index() -> Result<GrokAccountIndex, String> {
 }
 
 fn load_index_from_paths(path: &Path, details_dir: &Path) -> Result<GrokAccountIndex, String> {
-    if !path.exists() {
-        return Ok(GrokAccountIndex::default());
-    }
-    let content =
-        fs::read_to_string(&path).map_err(|error| format!("读取 Grok 账号索引失败: {}", error))?;
-    if content.trim().is_empty() {
-        return Ok(GrokAccountIndex::default());
-    }
-    match atomic_write::parse_json_with_auto_restore(&path, &content) {
-        Ok(index) => {
-            set_mode(path, 0o600)?;
-            Ok(index)
-        }
-        Err(error) => {
-            logger::log_warn(&format!(
-                "[Grok Account] 索引损坏，按账号详情重建: path={}, error={}",
-                path.display(),
-                error
-            ));
-            let _ = atomic_write::quarantine_file(&path, "invalid-json");
-            let index = rebuild_index_from_details_at(details_dir)?;
-            save_index_at(path, &index)?;
-            Ok(index)
+    let content = match fs::read_to_string(path) {
+        Ok(content) => Some(content),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(format!("读取 Grok 账号索引失败: {}", error)),
+    };
+    if let Some(content) = content.as_deref() {
+        if let Ok(index) = serde_json::from_str::<GrokAccountIndex>(content) {
+            if !index.accounts.is_empty() {
+                return Ok(index);
+            }
         }
     }
+    // Recovery is read-only. A later account mutation persists the recovered
+    // summaries under the normal store lock; listing must never race a delete
+    // or overwrite a newer index with an old directory scan.
+    rebuild_index_from_details_at(details_dir)
 }
 
 fn save_index(index: &GrokAccountIndex) -> Result<(), String> {
@@ -461,35 +452,21 @@ fn save_account_locked(account: &GrokAccount) -> Result<(), String> {
 
 pub fn list_accounts_checked() -> Result<Vec<GrokAccountView>, String> {
     let index = load_index()?;
+    let root = data_dir()?;
     let mut accounts = Vec::new();
-    let mut repaired = false;
+    let started = Instant::now();
     for summary in index.accounts {
-        if let Some(account) = load_account(&summary.id) {
-            // A previous local test run could persist its fixed fixture into the real
-            // data directory. Remove only the complete fixture fingerprint, never by
-            // email alone, so a real account cannot be mistaken for test data.
-            if is_known_test_fixture(&account) {
-                match remove_account(&account.id) {
-                    Ok(()) => {
-                        repaired = true;
-                        logger::log_warn(
-                            "[Grok Account] 已清理历史测试夹具账号: account_id=account-1",
-                        );
-                        continue;
-                    }
-                    Err(error) => logger::log_warn(&format!(
-                        "[Grok Account] 清理历史测试夹具账号失败: account_id={}, error={}",
-                        account.id, error
-                    )),
-                }
-            }
-            accounts.push(GrokAccountView::from(&account));
-        } else {
-            repaired = true;
+        if started.elapsed() > Duration::from_secs(10) {
+            return Err("读取 Grok 账号超时，请重试；原数据未修改".to_string());
         }
-    }
-    if repaired {
-        rebuild_index()?;
+        let id = normalize_id(&summary.id)?;
+        let path = root.join(ACCOUNTS_DIR).join(format!("{}.json", id));
+        let account = read_account_for_index(&path, &root)?;
+        // Historical fixtures are filtered only. Listing is not authorized to
+        // delete profiles, unbind instances or rewrite the user's account index.
+        if !is_known_test_fixture(&account) {
+            accounts.push(GrokAccountView::from(&account));
+        }
     }
     accounts.sort_by(|left, right| right.created_at.cmp(&left.created_at));
     Ok(accounts)
@@ -507,31 +484,61 @@ fn is_known_test_fixture(account: &GrokAccount) -> bool {
         && account.last_used == 1
 }
 
-fn rebuild_index() -> Result<(), String> {
-    let index = rebuild_index_from_details()?;
-    save_index(&index)
-}
-
-fn rebuild_index_from_details() -> Result<GrokAccountIndex, String> {
-    rebuild_index_from_details_at(&accounts_dir()?)
+fn read_account_for_index(path: &Path, root: &Path) -> Result<GrokAccount, String> {
+    let key = root.join("secure-account-storage.key");
+    let read = |source: &Path| {
+        crate::modules::secure_account_storage::read_account_file_readonly::<GrokAccount>(
+            source, &key,
+        )
+    };
+    let account = read(path).or_else(|error| {
+        read(&path.with_extension("json.bak")).map_err(|_| {
+            format!(
+                "读取 Grok 账号失败({}): {}；原数据未修改",
+                path.display(),
+                error
+            )
+        })
+    })?;
+    if path.file_stem().and_then(|value| value.to_str()) != Some(account.id.as_str()) {
+        return Err(format!(
+            "Grok 账号详情 ID 与文件名不一致: {}",
+            path.display()
+        ));
+    }
+    Ok(account)
 }
 
 fn rebuild_index_from_details_at(details_dir: &Path) -> Result<GrokAccountIndex, String> {
-    ensure_secret_dir(details_dir)?;
-    let mut index = GrokAccountIndex::default();
-    for entry in
-        fs::read_dir(details_dir).map_err(|error| format!("扫描 Grok 账号目录失败: {}", error))?
-    {
+    let mut index = GrokAccountIndex {
+        version: "1.0".into(),
+        accounts: Vec::new(),
+    };
+    let entries = match fs::read_dir(details_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(index),
+        Err(error) => return Err(format!("扫描 Grok 账号目录失败: {}", error)),
+    };
+    let root = details_dir.parent().ok_or("无法定位 Grok 数据目录")?;
+    let started = Instant::now();
+    for entry in entries {
+        if started.elapsed() > Duration::from_secs(10) {
+            return Err("恢复 Grok 账号索引超时，请重试；原数据未修改".into());
+        }
         let entry = entry.map_err(|error| format!("读取 Grok 账号目录项失败: {}", error))?;
-        if entry.path().extension().and_then(|value| value.to_str()) != Some("json") {
+        let path = entry.path();
+        if path.extension().and_then(|value| value.to_str()) != Some("json") {
             continue;
         }
-        if let Ok(content) = fs::read_to_string(entry.path()) {
-            if let Ok(account) = serde_json::from_str::<GrokAccount>(&content) {
-                index.accounts.push(account.summary());
-            }
+        // Shared decryption, no automatic writes/rotation. Any unreadable
+        // account aborts recovery instead of silently dropping part of the pool.
+        let account = read_account_for_index(&path, root)?;
+        if !is_known_test_fixture(&account) {
+            index.accounts.push(account.summary());
         }
+        std::thread::yield_now();
     }
+    index.accounts.sort_by(|left, right| left.id.cmp(&right.id));
     Ok(index)
 }
 
@@ -3611,36 +3618,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn corrupted_index_is_quarantined_and_rebuilt_from_account_details() {
-        let temp = TestDir::new();
-        let details = temp.0.join("grok_accounts");
-        std::fs::create_dir_all(&details).expect("create account details directory");
-        let account = sample_account();
-        std::fs::write(
-            details.join("account-1.json"),
-            serde_json::to_string_pretty(&account).expect("serialize account detail"),
-        )
-        .expect("write account detail");
-        let index_path = temp.0.join("grok_accounts.json");
-        std::fs::write(&index_path, "{invalid-json").expect("write corrupted index");
-
-        let index = load_index_from_paths(&index_path, &details)
-            .expect("rebuild index from valid account details");
-        assert_eq!(index.accounts.len(), 1);
-        assert_eq!(index.accounts[0].id, "account-1");
-        let persisted: crate::models::grok::GrokAccountIndex = serde_json::from_str(
-            &std::fs::read_to_string(&index_path).expect("read rebuilt index"),
-        )
-        .expect("rebuilt index should be valid JSON");
-        assert_eq!(persisted.accounts.len(), 1);
-        assert!(std::fs::read_dir(&temp.0)
-            .expect("scan quarantine files")
-            .filter_map(Result::ok)
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .any(|name| name.starts_with("grok_accounts.json.invalid-json.")));
+    mod index_recovery {
+        include!("grok_account_index_tests.rs");
     }
-
     #[cfg(unix)]
     #[test]
     fn corrupted_account_detail_restores_private_backup() {
@@ -3803,7 +3783,10 @@ mod tests {
         let listed = list_accounts_checked().expect("list accounts");
 
         assert!(listed.is_empty());
-        assert!(load_account("account-1").is_none());
+        assert!(
+            load_account("account-1").is_some(),
+            "listing must not delete fixtures"
+        );
     }
 
     #[test]

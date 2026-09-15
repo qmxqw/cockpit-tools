@@ -1,6 +1,7 @@
 pub mod account;
 pub mod account_index_repair;
 pub mod announcement;
+pub mod apikey_fun_links;
 pub mod antigravity_credential;
 pub mod antigravity_legacy_instance;
 pub mod antigravity_paths;
@@ -36,7 +37,10 @@ pub mod codex_official_app_server;
 pub mod codex_protocol;
 pub mod codex_quota;
 pub(crate) mod codex_quota_refresh_scheduler;
+pub(crate) mod codex_session_display;
 pub mod codex_session_file_time;
+pub mod codex_session_history_sanitize;
+pub mod codex_session_rollout_sanitize;
 pub mod codex_session_manager;
 pub mod codex_session_usage;
 pub mod codex_session_visibility;
@@ -90,6 +94,7 @@ pub mod quota;
 pub mod quota_cache;
 pub mod remote_config;
 pub mod secure_account_storage;
+pub mod sponsor_route_sync;
 pub mod ssh_server;
 pub mod sync_settings;
 #[cfg(test)]

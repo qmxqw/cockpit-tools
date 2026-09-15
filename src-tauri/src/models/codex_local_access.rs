@@ -7,6 +7,10 @@ fn default_image_generation_model() -> String {
     DEFAULT_CODEX_IMAGE_GENERATION_MODEL.to_string()
 }
 
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexLocalAccessRoutingStrategy {
@@ -210,6 +214,10 @@ fn default_max_retry_interval_ms() -> u64 {
 
 fn default_max_concurrent_image_requests() -> u16 {
     1
+}
+
+fn default_account_concurrency_wait_ms() -> u64 {
+    120 * 1000
 }
 
 fn default_legacy_request_read_timeout_ms() -> u64 {
@@ -506,6 +514,9 @@ pub struct CodexLocalAccessCollection {
     pub image_generation_model: String,
     #[serde(default)]
     pub image_generation_account_policies: HashMap<String, CodexLocalAccessImageGenerationPolicy>,
+    /// 生图转发账号池：生图请求只允许落到这些 OAuth 账号；为空表示不转发。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub image_generation_account_ids: Vec<String>,
     #[serde(default)]
     pub gateway_mode: CodexLocalAccessGatewayMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -518,6 +529,11 @@ pub struct CodexLocalAccessCollection {
     pub account_model_rules: Vec<CodexLocalAccessAccountModelRule>,
     #[serde(default)]
     pub model_aliases: Vec<CodexLocalAccessModelAlias>,
+    /// 仅实例供应商网关使用：不把模型别名写进 sidecar 的 `oauth-model-alias`。
+    /// 该别名只用于把对话请求改写到 API Key 供应商；写进 OAuth 通道会把经 ChatGPT 账号
+    /// 执行的请求（例如生图转发）改成上游模型名，被 ChatGPT 后端以「不支持该模型」拒绝。
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub suppress_oauth_model_alias: bool,
     #[serde(default = "default_model_pricing_version")]
     pub model_pricing_version: u64,
     #[serde(default)]
@@ -552,6 +568,12 @@ pub struct CodexLocalAccessCollection {
     pub immediate_sse_response: bool,
     #[serde(default = "default_max_concurrent_image_requests")]
     pub max_concurrent_image_requests: u16,
+    /// 账号并发数：同一账号同时允许的会话数；0 表示不限制。
+    #[serde(default)]
+    pub max_account_concurrency: u16,
+    /// 账号并发达到上限后的等待时长（毫秒）；0 表示不等待，直接拒绝。
+    #[serde(default = "default_account_concurrency_wait_ms")]
+    pub account_concurrency_wait_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_oauth_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -998,4 +1020,32 @@ pub struct CodexLocalAccessChatResult {
 pub struct CodexLocalAccessPortCleanupResult {
     pub killed_count: u32,
     pub state: CodexLocalAccessState,
+}
+
+/// 实例级本地网关（provider gateway / 混合模型路由 / 绑定 OAuth 本地网关）的运行态快照。
+///
+/// 仅面向 UI 只读展示：端口与密钥来自 profile 级 `state.json`，`status` 由进程状态与
+/// sidecar 健康探测共同决定，不能仅凭文件存在推断“正在运行”。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CodexInstanceGatewayView {
+    pub id: String,
+    pub kind: String,
+    pub runtime_id: String,
+    pub profile_dir: String,
+    pub instance_id: String,
+    pub instance_name: String,
+    pub is_default: bool,
+    pub account_id: Option<String>,
+    pub account_label: Option<String>,
+    pub bind_host: String,
+    pub port: Option<u16>,
+    pub base_url: Option<String>,
+    pub wire_api: Option<String>,
+    pub upstream_models: Vec<String>,
+    pub status: String,
+    pub managed: bool,
+    pub log_api_key_id: String,
+    /// 最近一次启动自愈失败原因；成功恢复或探测到运行中时为空。
+    pub last_error: Option<String>,
 }

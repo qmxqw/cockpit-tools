@@ -96,7 +96,6 @@ export type CopyField =
   | `apiKey:${string}`;
 export type RequestLogKindFilter = "all" | CodexLocalAccessRequestKind;
 export type RequestLogStatusFilter = "all" | "success" | "failed";
-export type RequestLogGatewayModeFilter = "all" | "legacy" | "sidecar";
 type BuiltinTimeoutPresetId = "long_wait" | "short_wait";
 type TimeoutPresetId = BuiltinTimeoutPresetId | string;
 
@@ -485,7 +484,7 @@ function parseModelAliasText(value: string): CodexLocalAccessModelAlias[] {
 }
 
 const DEEPSEEK_OFFICIAL_API_MODEL_MAPPINGS: CodexApiModelMapping[] = [
-  { client_model: "gpt-5.6-sol", upstream_model: "deepseek-v4-flash" },
+  { client_model: "gpt-5.6-sol", upstream_model: "deepseek-flash" },
   { client_model: "gpt-5.6-terra", upstream_model: "deepseek-v4-pro" },
   { client_model: "deepseek-v4-flash", upstream_model: "deepseek-v4-flash" },
   { client_model: "deepseek-v4-pro", upstream_model: "deepseek-v4-pro" },
@@ -653,19 +652,6 @@ function requestKindLabel(
   return t("codex.localAccess.requestKind.other", "其他");
 }
 
-function gatewayModeLabel(
-  mode: RequestLogGatewayModeFilter | null | undefined,
-  t: ReturnType<typeof useTranslation>["t"],
-): string {
-  if (mode === "legacy") {
-    return t("codex.localAccess.gatewayModeOldLabel", "API 服务-旧");
-  }
-  if (mode === "sidecar") {
-    return t("codex.localAccess.gatewayModeNewLabel", "API 服务-新");
-  }
-  return t("codex.apiService.logs.gatewayModeUnknown", "模式未知");
-}
-
 /** 与后端写入 x-cockpit-instance-id 一致：profile 目录 basename */
 function clientInstanceIdFromUserDataDir(userDataDir: string): string {
   const normalized = userDataDir.trim().replace(/[/\\]+$/, "");
@@ -729,6 +715,7 @@ export function useCodexApiServicePageController() {
     () => readStoredAddressKind(),
   );
   const [busy, setBusy] = useState(false);
+  const [routingSaving, setRoutingSaving] = useState(false);
   const [activating, setActivating] = useState(false);
   const [testDialogOpen, setTestDialogOpen] = useState(false);
   const [testDialogRunning, setTestDialogRunning] = useState(false);
@@ -796,6 +783,10 @@ export function useCodexApiServicePageController() {
   const [immediateSseResponseDraft, setImmediateSseResponseDraft] = useState(false);
   const [maxConcurrentImageRequestsDraft, setMaxConcurrentImageRequestsDraft] =
     useState("1");
+  const [maxAccountConcurrencyDraft, setMaxAccountConcurrencyDraft] =
+    useState("0");
+  const [accountConcurrencyWaitDraft, setAccountConcurrencyWaitDraft] =
+    useState("120");
   const [requestLogPage, setRequestLogPage] = useState(1);
   const [requestLogPageSize, setRequestLogPageSize] = useState(() =>
     readStoredRequestLogPageSize(),
@@ -810,8 +801,6 @@ export function useCodexApiServicePageController() {
     useState<RequestLogKindFilter>("all");
   const [requestLogStatusFilter, setRequestLogStatusFilter] =
     useState<RequestLogStatusFilter>("all");
-  const [requestLogGatewayModeFilter, setRequestLogGatewayModeFilter] =
-    useState<RequestLogGatewayModeFilter>("all");
   const [requestLogModelQuery, setRequestLogModelQuery] = useState("");
   const [requestLogAccountQuery, setRequestLogAccountQuery] = useState("");
   const [requestLogApiKeyQuery, setRequestLogApiKeyQuery] = useState("");
@@ -1436,7 +1425,6 @@ export function useCodexApiServicePageController() {
     requestLogPageSize,
     requestLogKindFilter,
     requestLogStatusFilter,
-    requestLogGatewayModeFilter,
     requestLogModelQuery,
     requestLogAccountQuery,
     requestLogApiKeyQuery,
@@ -1470,10 +1458,6 @@ export function useCodexApiServicePageController() {
         apiKeyQuery: requestLogApiKeyQuery,
         instanceQuery:
           requestLogInstanceQuery === "all" ? null : requestLogInstanceQuery,
-        gatewayMode:
-          requestLogGatewayModeFilter === "all"
-            ? null
-            : requestLogGatewayModeFilter,
         requestKind:
           requestLogKindFilter === "all" ? null : requestLogKindFilter,
         success,
@@ -1509,7 +1493,6 @@ export function useCodexApiServicePageController() {
     requestLogPageSize,
     requestLogKindFilter,
     requestLogStatusFilter,
-    requestLogGatewayModeFilter,
     requestLogModelQuery,
     requestLogAccountQuery,
     requestLogApiKeyQuery,
@@ -1569,6 +1552,12 @@ export function useCodexApiServicePageController() {
     setMaxConcurrentImageRequestsDraft(
       String(collection?.maxConcurrentImageRequests ?? 1),
     );
+    setMaxAccountConcurrencyDraft(
+      String(collection?.maxAccountConcurrency ?? 0),
+    );
+    setAccountConcurrencyWaitDraft(
+      formatSeconds(collection?.accountConcurrencyWaitMs ?? 120 * 1000),
+    );
     setTimeoutDrafts(timeoutDraftsFromValue(collection?.timeouts));
     setSelectedTimeoutPresetId(
       collection?.activeTimeoutPresetId || "long_wait",
@@ -1585,6 +1574,8 @@ export function useCodexApiServicePageController() {
     collection?.disableCooling,
     collection?.immediateSseResponse,
     collection?.maxConcurrentImageRequests,
+    collection?.maxAccountConcurrency,
+    collection?.accountConcurrencyWaitMs,
     collection?.timeouts,
     collection?.activeTimeoutPresetId,
   ]);
@@ -3000,23 +2991,61 @@ export function useCodexApiServicePageController() {
       );
       return;
     }
-    await runAction(
-      async () => {
-        const next =
-          await codexLocalAccessService.updateCodexLocalAccessRoutingOptions({
-            sessionAffinity: sessionAffinityDraft,
-            sessionAffinityTtlMs: sessionAffinityTtlSeconds * 1000,
-            responsesWebsocketsEnabled: responsesWebsocketsEnabledDraft,
-            maxRetryCredentials,
-            maxRetryIntervalMs: maxRetryIntervalSeconds * 1000,
-            disableCooling: disableCoolingDraft,
-            immediateSseResponse: immediateSseResponseDraft,
-            maxConcurrentImageRequests,
-          });
-        setState(next);
-      },
-      t("codex.apiService.routing.optionsSaved", "调度选项已保存"),
+    const maxAccountConcurrency = parseIntegerDraft(
+      maxAccountConcurrencyDraft,
+      0,
+      64,
     );
+    if (maxAccountConcurrency === null) {
+      setError(
+        t("codex.apiService.validation.numberRange", {
+          min: 0,
+          max: 64,
+          defaultValue: "Please enter a number between {{min}} and {{max}}",
+        }),
+      );
+      return;
+    }
+    const accountConcurrencyWaitSeconds = parseIntegerDraft(
+      accountConcurrencyWaitDraft,
+      0,
+      1800,
+    );
+    if (accountConcurrencyWaitSeconds === null) {
+      setError(
+        t("codex.apiService.validation.numberRange", {
+          min: 0,
+          max: 1800,
+          defaultValue: "Please enter a number between {{min}} and {{max}}",
+        }),
+      );
+      return;
+    }
+    if (routingSaving) return;
+    setRoutingSaving(true);
+    try {
+      await runAction(
+        async () => {
+          const next =
+            await codexLocalAccessService.updateCodexLocalAccessRoutingOptions({
+              sessionAffinity: sessionAffinityDraft,
+              sessionAffinityTtlMs: sessionAffinityTtlSeconds * 1000,
+              responsesWebsocketsEnabled: responsesWebsocketsEnabledDraft,
+              maxRetryCredentials,
+              maxRetryIntervalMs: maxRetryIntervalSeconds * 1000,
+              disableCooling: disableCoolingDraft,
+              immediateSseResponse: immediateSseResponseDraft,
+              maxConcurrentImageRequests,
+              maxAccountConcurrency,
+              accountConcurrencyWaitMs: accountConcurrencyWaitSeconds * 1000,
+            });
+          setState(next);
+        },
+        t("codex.apiService.routing.optionsSaved", "调度选项已保存"),
+      );
+    } finally {
+      setRoutingSaving(false);
+    }
   };
 
   const updateTimeoutDraft = (
@@ -3465,23 +3494,6 @@ export function useCodexApiServicePageController() {
     }
     return options;
   }, [codexInstances, t]);
-  const requestLogGatewayModeOptions: Array<{
-    value: RequestLogGatewayModeFilter;
-    label: string;
-  }> = [
-    {
-      value: "all",
-      label: t("codex.apiService.logs.allGatewayModes", "All Modes"),
-    },
-    {
-      value: "sidecar",
-      label: t("codex.localAccess.gatewayModeNewLabel", "API Service-New"),
-    },
-    {
-      value: "legacy",
-      label: t("codex.localAccess.gatewayModeOldLabel", "API Service-Old"),
-    },
-  ];
   const serviceTabs: Array<{
     key: ServiceTab;
     label: string;
@@ -3593,7 +3605,6 @@ export function useCodexApiServicePageController() {
   const hasRequestLogFilters = Boolean(
     requestLogKindFilter !== "all" ||
     requestLogStatusFilter !== "all" ||
-    requestLogGatewayModeFilter !== "all" ||
     requestLogInstanceQuery !== "all" ||
     requestLogModelQuery.trim() ||
     requestLogAccountQuery.trim() ||
@@ -3603,7 +3614,6 @@ export function useCodexApiServicePageController() {
   const clearRequestLogFilters = () => {
     setRequestLogKindFilter("all");
     setRequestLogStatusFilter("all");
-    setRequestLogGatewayModeFilter("all");
     setRequestLogModelQuery("");
     setRequestLogAccountQuery("");
     setRequestLogApiKeyQuery("");
@@ -3614,6 +3624,7 @@ export function useCodexApiServicePageController() {
   return {
     accessScope,
     accessScopeOptions,
+    accountConcurrencyWaitDraft,
     accountDisplayNames,
     accountModelMappingDrafts,
     accountModelMappingError,
@@ -3665,7 +3676,6 @@ export function useCodexApiServicePageController() {
     formatLatencyMs,
     formatRequestResultDetail,
     formatUsdCost,
-    gatewayModeLabel,
     groups,
     handleActivateService,
     handleApplyAccountModelRuleBulk,
@@ -3723,6 +3733,7 @@ export function useCodexApiServicePageController() {
     mappingDraftsFromAccount,
     mappingMemberAccounts,
     maskAccountText,
+    maxAccountConcurrencyDraft,
     maxConcurrentImageRequestsDraft,
     maxRetryCredentialsDraft,
     maxRetryIntervalDraft,
@@ -3758,8 +3769,6 @@ export function useCodexApiServicePageController() {
     requestLogError,
     requestLogErrorQuery,
     requestLogEvents,
-    requestLogGatewayModeFilter,
-    requestLogGatewayModeOptions,
     requestLogInstanceOptions,
     requestLogInstanceQuery,
     requestLogKindFilter,
@@ -3778,6 +3787,7 @@ export function useCodexApiServicePageController() {
     resolveClientInstanceLabel,
     responsesWebsocketsEnabledDraft,
     routingOptions,
+    routingSaving,
     routingStrategy,
     selectedModelId,
     selectedStatsRangeTitle,
@@ -3794,12 +3804,14 @@ export function useCodexApiServicePageController() {
     setAddressKind,
     setApiKeyDrafts,
     setApiKeyPolicyDrafts,
+    setAccountConcurrencyWaitDraft,
     setDisableCoolingDraft,
     setError,
     setExcludedModelsText,
     setHealthModalOpen,
     setImmediateSseResponseDraft,
     setKeyVisible,
+    setMaxAccountConcurrencyDraft,
     setMaxConcurrentImageRequestsDraft,
     setMaxRetryCredentialsDraft,
     setMaxRetryIntervalDraft,
@@ -3812,7 +3824,6 @@ export function useCodexApiServicePageController() {
     setRequestLogAccountQuery,
     setRequestLogApiKeyQuery,
     setRequestLogErrorQuery,
-    setRequestLogGatewayModeFilter,
     setRequestLogInstanceQuery,
     setRequestLogKindFilter,
     setRequestLogModelQuery,

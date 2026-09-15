@@ -12,6 +12,54 @@ pub struct PelicanChatOutput {
     pub usage: Option<Value>,
     pub response_id: Option<String>,
     pub response_model: Option<String>,
+    pub quota: Option<PelicanQuotaSnapshot>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PelicanQuotaSnapshot {
+    pub used_percent: f64,
+    pub remaining_percent: i32,
+    pub window_minutes: Option<i64>,
+    pub reset_at: Option<i64>,
+}
+
+fn pelican_header_number(headers: &reqwest::header::HeaderMap, name: &str) -> Option<f64> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse::<f64>().ok())
+}
+
+fn pelican_quota_snapshot_from_headers(
+    headers: &reqwest::header::HeaderMap,
+) -> Option<PelicanQuotaSnapshot> {
+    let used_percent = pelican_header_number(headers, "x-codex-primary-used-percent")?;
+    let used_percent = used_percent.clamp(0.0, 100.0);
+    let reset_at = pelican_header_number(headers, "x-codex-primary-reset-after-seconds")
+        .filter(|seconds| *seconds >= 0.0)
+        .map(|seconds| chrono::Utc::now().timestamp() + seconds.round() as i64);
+    Some(PelicanQuotaSnapshot {
+        used_percent,
+        remaining_percent: (100.0 - used_percent).round().clamp(0.0, 100.0) as i32,
+        window_minutes: pelican_header_number(headers, "x-codex-primary-window-minutes")
+            .filter(|minutes| *minutes > 0.0)
+            .map(|minutes| minutes.round() as i64),
+        reset_at,
+    })
+}
+
+pub fn pelican_quota_snapshot_from_codex_quota(quota: &CodexQuota) -> Option<PelicanQuotaSnapshot> {
+    if quota.hourly_window_present == Some(false) {
+        return None;
+    }
+    let remaining_percent = quota.hourly_percentage.clamp(0, 100);
+    Some(PelicanQuotaSnapshot {
+        used_percent: (100 - remaining_percent) as f64,
+        remaining_percent,
+        window_minutes: quota.hourly_window_minutes,
+        reset_at: quota.hourly_reset_time,
+    })
 }
 
 #[derive(Default)]
@@ -123,6 +171,7 @@ impl PelicanSseDecoder {
                 .get("model")
                 .and_then(Value::as_str)
                 .map(str::to_owned),
+            quota: None,
         })
     }
 }
@@ -163,6 +212,52 @@ async fn pelican_read_error_body(mut response: reqwest::Response) -> Result<Stri
         }
     }
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// 构造鹈鹕请求：与本地 API 服务共用同一套 Codex 客户端特征，
+/// 包括 prompt cache key、session/conversation 头与 client_metadata。
+fn build_pelican_request(
+    model: &str,
+    effort: &str,
+    prompt: &str,
+    account_id: &str,
+) -> Result<(Vec<u8>, HashMap<String, String>), String> {
+    let session_id = stable_uuid_from_text(&format!("agtools:codex:pelican:{account_id}"));
+    let window_id = format!("{session_id}:0");
+    let installation_id =
+        stable_uuid_from_text(&format!("agtools:codex:installation:{account_id}"));
+    let turn_id = stable_uuid_from_text(&format!("agtools:codex:turn:{account_id}:{session_id}"));
+    let turn_metadata = build_codex_turn_metadata(&session_id, &turn_id);
+    let mut body_value = json!({
+        "model": model,
+        "input": [{"type":"message", "role":"user", "content":[{"type":"input_text", "text":prompt}]}],
+        "instructions": PELICAN_DELIVERY_INSTRUCTIONS,
+        "reasoning": {"effort":effort, "summary":"auto"},
+        "store":false, "stream":true,
+    });
+    if let Some(object) = body_value.as_object_mut() {
+        object.insert(
+            "prompt_cache_key".to_string(),
+            Value::String(session_id.clone()),
+        );
+        object.insert(
+            "client_metadata".to_string(),
+            json!({
+                "x-codex-installation-id": installation_id,
+                "x-codex-window-id": window_id,
+                "x-codex-turn-metadata": turn_metadata,
+            }),
+        );
+    }
+    let body = serde_json::to_vec(&body_value).map_err(|e| e.to_string())?;
+    let headers = HashMap::from([
+        ("accept".to_string(), "text/event-stream".to_string()),
+        ("content-type".to_string(), "application/json".to_string()),
+        ("session-id".to_string(), session_id.clone()),
+        ("conversation_id".to_string(), session_id.clone()),
+        ("x-client-request-id".to_string(), session_id),
+    ]);
+    Ok((body, headers))
 }
 
 pub async fn run_pelican_chat(
@@ -241,17 +336,7 @@ async fn pelican_chat_inner(
     if account.is_api_key_auth() || account.is_web_session_auth() {
         return Err("PELICAN_UNSUPPORTED_ACCOUNT".into());
     }
-    let body = serde_json::to_vec(&json!({
-        "model": model,
-        "input": [{"type":"message", "role":"user", "content":[{"type":"input_text", "text":prompt}]}],
-        "instructions": PELICAN_DELIVERY_INSTRUCTIONS,
-        "reasoning": {"effort":effort, "summary":"auto"},
-        "store":false, "stream":true,
-    })).map_err(|e| e.to_string())?;
-    let mut headers = HashMap::from([
-        ("accept".to_string(), "text/event-stream".to_string()),
-        ("content-type".to_string(), "application/json".to_string()),
-    ]);
+    let (body, mut headers) = build_pelican_request(model, effort, prompt, account_id)?;
     for name in CODEX_OFFICIAL_EMPTY_HEADERS {
         headers
             .entry((*name).to_string())
@@ -376,6 +461,7 @@ async fn pelican_consume_response(
     idle_timeout: Duration,
     on_delta: &impl Fn(String),
 ) -> Result<PelicanChatOutput, String> {
+    let quota = pelican_quota_snapshot_from_headers(response.headers());
     let mut decoder = PelicanSseDecoder::default();
     while let Some(chunk) = timeout(idle_timeout, response.chunk())
         .await
@@ -390,7 +476,9 @@ async fn pelican_consume_response(
             break;
         }
     }
-    decoder.finish(on_delta)
+    let mut output = decoder.finish(on_delta)?;
+    output.quota = quota;
+    Ok(output)
 }
 
 #[cfg(test)]

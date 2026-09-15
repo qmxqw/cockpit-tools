@@ -12,10 +12,14 @@ include!("codex_local_access_sidecar_runtime.rs");
 include!("codex_local_access_collection.rs");
 include!("codex_local_access_gateway_runtime.rs");
 include!("codex_local_access_provider_gateway.rs");
+include!("codex_local_access_instance_gateways.rs");
 include!("codex_local_access_probe_chat.rs");
 include!("codex_pelican_transport.rs");
 include!("codex_local_access_commands.rs");
 include!("codex_local_access_http.rs");
+// The retired in-process WebSocket gateway is retained only as a test oracle.
+// Production traffic is handled by the bundled CLIProxyAPI sidecar.
+#[cfg(test)]
 include!("codex_local_access_recovery.rs");
 
 #[cfg(test)]

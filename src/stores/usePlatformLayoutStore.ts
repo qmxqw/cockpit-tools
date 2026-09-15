@@ -1309,13 +1309,8 @@ function loadPersistedState(): NormalizedLayoutStateData {
     }, {
       promoteAntigravityGroupEntry: !antigravityGroupFirstMigrated,
     });
-    if (
-      !antigravityGroupFirstMigrated
-      || !traeSuiteDefaultGroupRestored
-      || !codexApiServiceSuiteMigrated
-    ) {
-      persist(normalized);
-    }
+    // Normalize in memory only. Startup migration is not a user edit and must
+    // not get a fresh revision before durable preferences have been loaded.
     return normalized;
   } catch {
     const defaultGroups = defaultPlatformGroups();
@@ -1883,6 +1878,12 @@ export const usePlatformLayoutStore = create<PlatformLayoutState>((set, get) => 
 }));
 
 if (typeof window !== 'undefined') {
+  window.addEventListener('agtools:platform-layout-hydrated', () => {
+    // Hydration can finish after the store module has initialized. Reload the
+    // durable value once so a stale WebView cache cannot win after upgrades.
+    usePlatformLayoutStore.setState(loadPersistedState());
+    usePlatformLayoutStore.getState().syncTrayLayout();
+  });
   window.setTimeout(() => {
     usePlatformLayoutStore.getState().syncTrayLayout();
   }, 0);

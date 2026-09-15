@@ -751,7 +751,7 @@ fn resolve_prompt_cache_key(
         .unwrap_or_else(|| stable_prompt_cache_key(api_key))
 }
 
-fn is_valid_gpt_reasoning_signature(raw_signature: &str) -> bool {
+pub(crate) fn is_valid_gpt_reasoning_signature(raw_signature: &str) -> bool {
     if raw_signature.is_empty()
         || raw_signature.len() > MAX_GPT_REASONING_SIGNATURE_LEN
         || raw_signature != raw_signature.trim()
@@ -1625,6 +1625,21 @@ fn sanitize_collection_structure(
         collection.max_retry_interval_ms = normalized_max_retry_interval_ms;
         changed = true;
     }
+    let normalized_max_account_concurrency = collection
+        .max_account_concurrency
+        .min(MAX_ACCOUNT_CONCURRENCY_LIMIT);
+    if normalized_max_account_concurrency != collection.max_account_concurrency {
+        collection.max_account_concurrency = normalized_max_account_concurrency;
+        changed = true;
+    }
+    let normalized_account_concurrency_wait_ms = collection.account_concurrency_wait_ms.clamp(
+        ACCOUNT_CONCURRENCY_WAIT_MIN_MS,
+        ACCOUNT_CONCURRENCY_WAIT_MAX_MS,
+    );
+    if normalized_account_concurrency_wait_ms != collection.account_concurrency_wait_ms {
+        collection.account_concurrency_wait_ms = normalized_account_concurrency_wait_ms;
+        changed = true;
+    }
     changed |= normalize_timeouts(&mut collection.timeouts);
     changed |= normalize_timeout_presets(&mut collection.timeout_presets);
     changed |= normalize_active_timeout_preset_id(collection);
@@ -1696,6 +1711,25 @@ fn sanitize_collection_with_accounts(
         .image_generation_account_policies
         .retain(|account_id, _| known_account_ids.contains(account_id.as_str()));
     if collection.image_generation_account_policies != before_image_policies {
+        changed = true;
+    }
+
+    // 生图转发账号池只允许指向仍然有效的 OAuth 账号。
+    let before_image_accounts = collection.image_generation_account_ids.clone();
+    let mut deduped_image_accounts: Vec<String> = Vec::new();
+    for account_id in &collection.image_generation_account_ids {
+        if !valid_bound_oauth_account_ids.contains(account_id) {
+            changed = true;
+            continue;
+        }
+        if deduped_image_accounts.iter().any(|value| value == account_id) {
+            changed = true;
+            continue;
+        }
+        deduped_image_accounts.push(account_id.clone());
+    }
+    if deduped_image_accounts != before_image_accounts {
+        collection.image_generation_account_ids = deduped_image_accounts;
         changed = true;
     }
 
@@ -1784,12 +1818,14 @@ async fn ensure_runtime_loaded_without_start_with_profile_restore(
                 image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
                 image_generation_model: DEFAULT_CODEX_IMAGE_GENERATION_MODEL.to_string(),
                 image_generation_account_policies: HashMap::new(),
+                image_generation_account_ids: Vec::new(),
                 gateway_mode: CodexLocalAccessGatewayMode::default(),
                 upstream_proxy_url: None,
                 routing_strategy: CodexLocalAccessRoutingStrategy::default(),
                 custom_routing_rules: Vec::new(),
                 account_model_rules: Vec::new(),
                 model_aliases: Vec::new(),
+                suppress_oauth_model_alias: false,
                 model_pricing_version: DEFAULT_MODEL_PRICING_VERSION,
                 model_pricings: Vec::new(),
                 excluded_models: Vec::new(),
@@ -1807,6 +1843,8 @@ async fn ensure_runtime_loaded_without_start_with_profile_restore(
                 debug_logs: true,
                 immediate_sse_response: false,
                 max_concurrent_image_requests: 1,
+                max_account_concurrency: 0,
+                account_concurrency_wait_ms: DEFAULT_ACCOUNT_CONCURRENCY_WAIT_MS,
                 bound_oauth_account_id: None,
                 bound_oauth_quota_reserve: None,
                 account_ids: Vec::new(),
@@ -1964,7 +2002,7 @@ async fn ensure_runtime_loaded_for_app_startup() -> Result<(), String> {
             runtime.collection.clone()
         };
         if let Some(collection) = collection.as_ref() {
-            if local_access_profile_takeovers_need_websocket_sync(collection) {
+            if local_access_profile_takeovers_need_sync(collection) {
                 ensure_local_access_profile_takeovers_from_runtime().await?;
             }
         }

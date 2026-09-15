@@ -20,7 +20,7 @@ import { CODEX_API_PROVIDER_CUSTOM_ID, COCKPIT_API_PROVIDER_ID, COCKPIT_API_PROV
 import { isApiKeyFunProviderBaseUrl } from "../utils/apikeyFunLinks";
 import { type ApiKeyFunPrefillPayload } from "../utils/apiKeyFunPrefill";
 import { resolveCodexProviderCapabilityProfile } from "../utils/codexProviderGateway";
-import { findCodexModelProviderById, findCodexModelProviderByBaseUrl, listCodexModelProviders, type CodexModelProvider } from "../services/codexModelProviderService";
+import { findCodexModelProviderById, findCodexModelProviderByBaseUrl, mergeCodexModelProviderApiKeysFromAccounts, type CodexModelProvider } from "../services/codexModelProviderService";
 import { readCodexApiKeyUsageCache, type CodexApiKeyUsageState } from "../services/codexApiKeyUsageRefreshService";
 import { parseMfaCredentialInput, upsertSavedMfaRecord } from "../utils/mfaVault";
 import { DEFAULT_CODEX_API_BASE_URL, DEFAULT_CODEX_API_PROVIDER_ID, getDefaultApiProviderPresetId, isSameHttpBaseUrl, normalizeHttpBaseUrl, normalizeSponsorApiProviderTemplates, OPENAI_OFFICIAL_PRESET_ID, parseApiModelCatalogText, resolveApiProviderPresetDefaults, type OAuthBindingQuotaReserveFieldErrors, type OAuthBindingTargetKind, type SponsorApiProviderTemplate } from "./codexAccountsControllerModel";
@@ -515,14 +515,14 @@ export function useCodexAccountsOAuthController(context: Pick<ReturnType<typeof 
     const reloadManagedProviders = useCallback(async () => {
       setManagedProvidersLoading(true);
       try {
-        const items = await listCodexModelProviders();
+        const items = await mergeCodexModelProviderApiKeysFromAccounts(accounts);
         setManagedProviders(items);
       } catch (err) {
         console.error("[CodexModelProviders] 加载失败", err);
       } finally {
         setManagedProvidersLoading(false);
       }
-    }, []);
+    }, [accounts]);
   
     const buildApiProviderPayload = useCallback(
       (

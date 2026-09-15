@@ -665,8 +665,9 @@ func buildReverseMapFromClaudeOriginalToShort(original []byte) map[string]string
 	return m
 }
 
-// normalizeToolParameters ensures object schemas contain at least an empty properties map
-// and strips dialect keywords ($schema, $id) from schema objects.
+// normalizeToolParameters ensures object schemas contain at least an empty properties map,
+// strips dialect keywords ($schema, $id), and drops regex patterns containing unsupported
+// Unicode property escapes (\p{...} / \P{...}) that cause upstream schema validation failures.
 func normalizeToolParameters(raw string) string {
 	raw = strings.TrimSpace(raw)
 	if raw == "" || raw == "null" || !gjson.Valid(raw) {
@@ -719,8 +720,24 @@ func stripDialectKeywordsFromSchema(v any) {
 	case map[string]any:
 		delete(schema, "$schema")
 		delete(schema, "$id")
+		if patternVal, ok := schema["pattern"].(string); ok && util.HasUnsupportedUnicodePropertyEscape(patternVal) {
+			delete(schema, "pattern")
+		}
+
+		if patternProps, ok := schema["patternProperties"].(map[string]any); ok {
+			for patternKey, subSchema := range patternProps {
+				if util.HasUnsupportedUnicodePropertyEscape(patternKey) {
+					delete(patternProps, patternKey)
+				} else {
+					stripDialectKeywordsFromSchema(subSchema)
+				}
+			}
+		}
 
 		for _, mapKey := range codexSchemaMapKeywords {
+			if mapKey == "patternProperties" {
+				continue
+			}
 			if subMap, ok := schema[mapKey].(map[string]any); ok {
 				for _, subSchema := range subMap {
 					stripDialectKeywordsFromSchema(subSchema)
@@ -747,36 +764,10 @@ func stripDialectKeywordsFromSchema(v any) {
 	}
 }
 
-// codexSchemaMapKeywords holds JSON Schema keywords whose values are maps of
-// subschemas; codexSchemaValueKeywords holds keywords with a single nested
-// schema or a list of schemas.
-var codexSchemaMapKeywords = [...]string{
-	"properties",
-	"$defs",
-	"definitions",
-	"patternProperties",
-	"dependentSchemas",
-	"dependencies",
-}
-
-var codexSchemaValueKeywords = [...]string{
-	"items",
-	"prefixItems",
-	"contains",
-	"additionalProperties",
-	"propertyNames",
-	"unevaluatedProperties",
-	"unevaluatedItems",
-	"additionalItems",
-	"contentSchema",
-	"anyOf",
-	"oneOf",
-	"allOf",
-	"not",
-	"if",
-	"then",
-	"else",
-}
+var (
+	codexSchemaMapKeywords   = util.SchemaMapKeywords
+	codexSchemaValueKeywords = util.SchemaValueKeywords
+)
 
 // codexSchemaMissesRequired reports whether a JSON Schema has any declared
 // property missing from its sibling required list (recursively). OpenAI

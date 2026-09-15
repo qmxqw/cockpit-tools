@@ -273,8 +273,6 @@ pub fn get_general_config(app: tauri::AppHandle) -> Result<GeneralConfig, String
         codex_sync_wsl: user_config.codex_sync_wsl,
         codex_app_ui_injection_enabled: user_config.codex_app_ui_injection_enabled,
         codex_oauth_app_version: user_config.codex_oauth_app_version,
-        codex_cli_only_allow_app_server_clients: user_config
-            .codex_cli_only_allow_app_server_clients,
         codex_wsl_config_dir: user_config.codex_wsl_config_dir,
         zed_auto_refresh_minutes: user_config.zed_auto_refresh_minutes,
         ghcp_auto_refresh_minutes: user_config.ghcp_auto_refresh_minutes,
@@ -516,8 +514,6 @@ pub fn patch_general_config(
     }
 
     let mut language_changed = false;
-    let codex_client_policy_changed =
-        updates.contains_key("codex_cli_only_allow_app_server_clients");
     let mut token_keeper_enabled_changed = false;
     let mut auto_import_from_local_enabled_changed = false;
     let mut floating_always_on_top_changed = false;
@@ -595,10 +591,6 @@ pub fn patch_general_config(
         modules::auto_local_import::notify_config_changed(
             new_config.auto_import_from_local_enabled,
         );
-    }
-
-    if codex_client_policy_changed {
-        modules::codex_local_access::schedule_codex_client_policy_sync();
     }
 
     if floating_always_on_top_changed {

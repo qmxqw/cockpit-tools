@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
 
 	"encoding/json"
 
@@ -26,6 +27,7 @@ import (
 	responsesconverter "github.com/router-for-me/CLIProxyAPI/v7/internal/translator/openai/openai/responses"
 
 	cliproxyexecutor "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/executor"
+	cliproxysession "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/session"
 
 	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
 )
@@ -238,6 +240,9 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 		req.Header.Set("Accept", "text/event-stream")
 	}
 	copyProviderGatewayDiagnosticHeaders(req.Header, c.Request.Header)
+	if isOpenCodeGoGateway(gateway.BaseURL) {
+		applyOpenCodeSessionHeader(req.Header, c.Request.Header, body)
+	}
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -277,10 +282,7 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 			return
 		}
 		c.Status(http.StatusOK)
-		c.Stream(func(w io.Writer) bool {
-			_, _ = io.Copy(w, resp.Body)
-			return false
-		})
+		s.writeProviderGatewayResponsesStream(c, resp.Body)
 		return
 	}
 
@@ -298,11 +300,43 @@ func (s *relayServer) handleProviderGatewayRequest(c *gin.Context, gateway *prov
 			payload = sdktranslator.TranslateNonStream(relayContext(c), sdktranslator.FormatOpenAI, sourceFormat, upstreamModel, body, upstreamBody, payload, nil)
 		}
 	}
+	if sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAIResponse) {
+		payload = normalizeResponsesReasoningContentBody(payload)
+	}
 	contentType := resp.Header.Get("Content-Type")
 	if contentType == "" || (wireAPI == "chat_completions" && !sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAI)) {
 		contentType = "application/json"
 	}
 	c.Data(http.StatusOK, contentType, payload)
+}
+
+func isOpenCodeGoGateway(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return false
+	}
+	host := strings.ToLower(strings.TrimSpace(u.Hostname()))
+	return host == "opencode.ai" || strings.HasSuffix(host, ".opencode.ai")
+}
+
+func applyOpenCodeSessionHeader(dst, src http.Header, payload []byte) {
+	if dst.Get("x-opencode-session") != "" {
+		return
+	}
+	if value := strings.TrimSpace(src.Get("x-opencode-session")); value != "" {
+		dst.Set("x-opencode-session", value)
+		return
+	}
+	if info, ok := cliproxysession.ExtractSessionInfo(src, payload, nil); ok && info.SessionID != "" {
+		dst.Set("x-opencode-session", info.SessionID)
+		return
+	}
+	// A request-scoped opaque fallback is preferable to dropping the required
+	// header. Clients that expose a conversation identity are handled above.
+	var randomID [16]byte
+	if _, err := rand.Read(randomID[:]); err == nil {
+		dst.Set("x-opencode-session", fmt.Sprintf("cockpit-%x", randomID[:]))
+	}
 }
 
 func rewriteProviderGatewayBodyModel(body []byte, model string) []byte {
@@ -480,6 +514,26 @@ func (s *relayServer) writeProviderGatewayTranslatedChatStream(c *gin.Context, b
 	}
 }
 
+// writeProviderGatewayResponsesStream 透传 provider gateway 的 Responses SSE，
+// 只在出口清洗第三方推理项，其余字节与原有 io.Copy 透传保持一致。
+func (s *relayServer) writeProviderGatewayResponsesStream(c *gin.Context, body io.Reader) {
+	if body == nil {
+		return
+	}
+	reader := bufio.NewReaderSize(body, 64*1024)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if _, writeErr := c.Writer.Write(normalizeResponsesReasoningContentSSELine(line)); writeErr != nil {
+				return
+			}
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func providerGatewaySSEFrame(event []byte) []byte {
 	if len(event) == 0 || bytes.HasSuffix(event, []byte("\n\n")) || bytes.HasSuffix(event, []byte("\r\n\r\n")) {
 		return event
@@ -609,6 +663,10 @@ func (s *relayServer) handleNonStream(c *gin.Context, body []byte, model string,
 	}
 	s.emitExecutorDiagnostic(c, "executor_completed", model, "execute", startedAt, "")
 	writeUpstreamHeaders(c.Writer.Header(), resp.Headers)
+	if sourceFormatEqual(sourceFormat, sdktranslator.FormatOpenAIResponse) {
+		// 出口统一清洗第三方推理项，避免客户端把不兼容的 reasoning content 落盘。
+		resp.Payload = normalizeResponsesReasoningContentBody(resp.Payload)
+	}
 	contentType := resp.Headers.Get("Content-Type")
 	if contentType == "" {
 		contentType = "application/json"

@@ -19,11 +19,46 @@ auth scheduler, Live request/sideband/realtime implementation, and supporting
 config/proxy utilities. The outer relay keeps API-key account scoping and rejects
 provider-gateway profiles because Codex Live requires a ChatGPT OAuth credential.
 
+## Codex/API policy convergence
+
+The local `CLIProxyAPI` v7.2.157 tree (`09a29bd3`) is the reference for Codex and
+Responses API behavior. This is a targeted policy alignment, not a full upgrade
+of the bundled v7.2.155 dependency tree.
+
+- Removed the local device/session/full fingerprint rewrite and automatic host
+  projection; old account fields are retained only for import/export compatibility.
+- Removed the local official-client restriction and third-party-client exceptions,
+  including global/per-account controls and runtime metadata projection. Clients
+  still require the normal API key and remain subject to account-scoping rules.
+- Removed the API-Service-only capacity wrapper, error-code rewriting and
+  transient-request cooldown bypass. The v7.2.157 bootstrap capacity detection,
+  `model_not_found` account rotation, optional model-level cooling, and permanent
+  OAuth failure handling are used instead.
+- Removed extra host/WebSocket input namespace deletion and the retired Rust
+  gateway dispatch/rejected-field retry path. Removed the uncalled handler-level
+  encrypted-content retry helper; request history is not stripped and replayed.
+  Protocol translators,
+  signature validation, token accounting and upstream session safety remain intact.
+- Retained Cockpit token authority, scoped keys, instance-specific gateways,
+  Responses Lite integration, and Agent Identity as local extensions.
+  Agent Identity has no equivalent in the reference tree and is not removed
+  without an explicit decision about existing accounts.
+- Synchronized the v7.2.157 Responses transport fixes: official nested SSE error
+  payloads with preserved sequence numbers, split-CRLF framing, WebSocket prewarm
+  follow-up merging, and named `function_call_output` passthrough.
+- Synchronized Codex schema/header compatibility and model additions: unsupported
+  Unicode property regexes are removed from tool schemas, `$CPA-SESSION-ID`
+  custom headers resolve from the canonical request session, and the
+  `gpt-image-2.5-flare` / `gpt-image-2.5-sunburst` image variants are accepted.
+  Cockpit keeps `gpt-5.5` and `gpt-image-2.5` as its local image defaults.
+
 ## Update procedure
 
-1. Compare the next upstream tag against `v7.2.155`, beginning with
+1. Compare the next upstream tag against the targeted `v7.2.157` policy baseline,
+   while separately assessing a full dependency-tree upgrade from `v7.2.155`.
+   Begin with
    `internal/runtime/executor/codex*`, `internal/client/codex`, `sdk/cliproxy/auth`,
-   `internal/config`, `internal/registry`, and `sdk/proxyutil`.
+   `sdk/api/handlers`, `internal/config`, `internal/registry`, and `sdk/proxyutil`.
 2. Port the complete dependency closure instead of copying a single changed file.
 3. Preserve Cockpit-specific executor identity, token ownership, account routing,
    quota, and request-policy compatibility shims.

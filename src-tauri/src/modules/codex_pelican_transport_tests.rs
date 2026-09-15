@@ -1,6 +1,43 @@
 use super::*;
 
 #[test]
+fn pelican_request_carries_codex_client_metadata_and_prompt_cache() {
+    let (body, headers) =
+        build_pelican_request("gpt-5.5", "high", "hi", "acct-1").expect("build request");
+    let value: Value = serde_json::from_slice(&body).expect("parse body");
+    assert_eq!(value.get("store"), Some(&Value::Bool(false)));
+    assert_eq!(value.get("stream"), Some(&Value::Bool(true)));
+    let metadata = value
+        .get("client_metadata")
+        .and_then(Value::as_object)
+        .expect("client metadata");
+    for key in [
+        "x-codex-installation-id",
+        "x-codex-window-id",
+        "x-codex-turn-metadata",
+    ] {
+        assert!(
+            metadata
+                .get(key)
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()),
+            "{key} should be present"
+        );
+    }
+    let cache_key = value
+        .get("prompt_cache_key")
+        .and_then(Value::as_str)
+        .expect("prompt cache key");
+    for header in ["session-id", "conversation_id", "x-client-request-id"] {
+        assert_eq!(headers.get(header).map(String::as_str), Some(cache_key));
+    }
+    // 同一账号必须稳定，prompt cache 命中依赖这一点。
+    let (again, _) =
+        build_pelican_request("gpt-5.5", "high", "hi", "acct-1").expect("build again");
+    assert_eq!(body, again);
+}
+
+#[test]
 fn oauth_errors_do_not_leak_account_credentials() {
     let account = CodexAccount::new(
         "test-account".into(),
@@ -180,4 +217,31 @@ async fn total_timeout_stops_a_nonterminating_operation() {
     let result =
         pelican_with_cancel::<()>(rx, Duration::from_millis(10), std::future::pending()).await;
     assert_eq!(result.unwrap_err(), "PELICAN_TIMEOUT");
+}
+
+#[test]
+fn parses_primary_rate_limit_headers() {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        "x-codex-primary-used-percent",
+        reqwest::header::HeaderValue::from_static("42.5"),
+    );
+    headers.insert(
+        "x-codex-primary-window-minutes",
+        reqwest::header::HeaderValue::from_static("300"),
+    );
+    headers.insert(
+        "x-codex-primary-reset-after-seconds",
+        reqwest::header::HeaderValue::from_static("120"),
+    );
+    let snapshot = pelican_quota_snapshot_from_headers(&headers).expect("quota snapshot");
+    assert_eq!(snapshot.used_percent, 42.5);
+    assert_eq!(snapshot.remaining_percent, 58);
+    assert_eq!(snapshot.window_minutes, Some(300));
+    assert!(snapshot.reset_at.is_some());
+}
+
+#[test]
+fn ignores_missing_primary_rate_limit_headers() {
+    assert!(pelican_quota_snapshot_from_headers(&reqwest::header::HeaderMap::new()).is_none());
 }

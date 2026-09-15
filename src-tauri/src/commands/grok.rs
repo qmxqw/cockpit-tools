@@ -302,8 +302,23 @@ mod tests {
 }
 
 #[tauri::command]
-pub fn list_grok_accounts() -> Result<Vec<GrokAccountView>, String> {
-    grok_account::list_accounts_checked()
+pub async fn list_grok_accounts() -> Result<Vec<GrokAccountView>, String> {
+    // Disk/key access and recovery scans must not run on the UI thread. Keep
+    // the permit in the worker after a timeout so retries cannot pile up jobs.
+    static LIST_GATE: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
+        std::sync::LazyLock::new(|| std::sync::Arc::new(tokio::sync::Semaphore::new(1)));
+    let permit = LIST_GATE
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| "Grok 账号正在读取，请稍后重试".to_string())?;
+    let worker = tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        grok_account::list_accounts_checked()
+    });
+    tokio::time::timeout(std::time::Duration::from_secs(15), worker)
+        .await
+        .map_err(|_| "读取 Grok 账号超时，请重试；原数据未修改".to_string())?
+        .map_err(|error| format!("读取 Grok 账号任务失败: {}", error))?
 }
 
 #[tauri::command]

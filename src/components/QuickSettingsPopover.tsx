@@ -12,7 +12,6 @@ import {
   Zap,
   X,
   EyeOff,
-  ShieldCheck,
 } from 'lucide-react';
 import { useEscClose } from '../hooks/useEscClose';
 import * as accountService from '../services/accountService';
@@ -59,9 +58,7 @@ import type {
   CodexAccount,
   CodexExperimentalModelDefinition,
   CodexQuickConfig,
-  CodexFingerprintMode,
 } from '../types/codex';
-import { isStandardCodexOAuthAccount } from '../types/codex';
 import { getDisplayGroups, type DisplayGroup } from '../services/groupService';
 import { useRemoteConfigStore } from '../stores/useRemoteConfigStore';
 import { usePlatformRuntimeSupport } from '../hooks/usePlatformRuntimeSupport';
@@ -74,7 +71,6 @@ import { CodexSshSyncSettingsControl } from './codex/CodexSshSyncSettingsControl
 import { CodexContextManagementControl } from './codex/CodexContextManagementControl';
 import { getCodexExperimentalModelErrorMessage } from '../utils/codexExperimentalModel';
 import { CodexExperimentalModelEditor } from './codex/CodexExperimentalModelEditor';
-import { CodexOAuthPolicyModal } from './codex/CodexOAuthPolicyModal';
 import './QuickSettingsPopover.css';
 
 /** GeneralConfig from backend */
@@ -88,7 +84,6 @@ interface GeneralConfig {
   codex_sync_wsl: boolean;
   codex_app_ui_injection_enabled?: boolean;
   codex_oauth_app_version?: string;
-  codex_cli_only_allow_app_server_clients?: boolean;
   codex_wsl_config_dir: string;
   ghcp_auto_refresh_minutes: number;
   windsurf_auto_refresh_minutes: number;
@@ -427,7 +422,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
     useState<string | null>(null);
   const [codexModelManagementModelsError, setCodexModelManagementModelsError] =
     useState<string | null>(null);
-  const [codexOAuthPolicyModalOpen, setCodexOAuthPolicyModalOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshEditing, setRefreshEditing] = useState(false);
   const [currentAccountRefreshEditing, setCurrentAccountRefreshEditing] = useState(false);
@@ -521,19 +515,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         accountIds: group.accountIds || [],
       })),
     [codexAccountGroups],
-  );
-  const codexOAuthPolicyAccounts = useMemo(
-    () => codexAccounts.filter((account) => isStandardCodexOAuthAccount(account)),
-    [codexAccounts],
-  );
-  const codexOAuthFingerprintLabels = useMemo<Record<CodexFingerprintMode, string>>(
-    () => ({
-      off: t('settings.general.codexFingerprintOff', '关闭'),
-      device: t('settings.general.codexFingerprintDevice', '仅设备'),
-      session: t('settings.general.codexFingerprintSession', '设备 + 会话'),
-      full: t('settings.general.codexFingerprintFull', '完整收敛'),
-    }),
-    [t],
   );
   const loadCodexModelManagement = useCallback(async () => {
     if (type !== 'codex') return;
@@ -2055,91 +2036,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
                       {codexModelManagementNotice}
                     </div>
                   )}
-                  <div className="qs-row qs-row--top qs-codex-oauth-policy-row">
-                    <div className="qs-row-label">
-                      <ShieldCheck size={15} />
-                      <span>{t('codex.oauthPolicy.globalTitle', '允许第三方客户端')}</span>
-                    </div>
-                    <div className="qs-row-control qs-codex-oauth-policy-control">
-                      <label className="qs-switch">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(config.codex_cli_only_allow_app_server_clients)}
-                          onChange={(event) => {
-                            const enabled = event.target.checked;
-                            setCodexOAuthPolicyModalOpen(false);
-                            void saveConfig({
-                              codex_cli_only_allow_app_server_clients: enabled,
-                            });
-                          }}
-                        />
-                        <span className="qs-switch-slider" />
-                      </label>
-                    </div>
-                  </div>
-                  <div className="qs-hint">
-                    {t(
-                      'codex.oauthPolicy.globalDescription',
-                      '开启后，受“仅官方客户端”限制的账号也允许第三方客户端使用；关闭时，可在账号策略中单独开启。',
-                    )}
-                  </div>
-                  {config.codex_cli_only_allow_app_server_clients && (
-                    <div className="qs-codex-oauth-policy-summary">
-                      <div className="qs-codex-oauth-policy-summary__header">
-                        <span>{t('codex.oauthPolicy.title', 'Codex OAuth 账号策略')}</span>
-                        <button
-                          type="button"
-                          className="qs-codex-oauth-policy-summary__manage"
-                          onClick={() => setCodexOAuthPolicyModalOpen(true)}
-                        >
-                          {t('codex.oauthPolicy.manage', '管理')}
-                        </button>
-                      </div>
-                      <div className="qs-codex-oauth-policy-summary__list">
-                        {codexOAuthPolicyAccounts.length === 0 ? (
-                          <div className="qs-codex-oauth-policy-summary__empty">
-                            {t(
-                              'codex.oauthPolicy.noAccounts',
-                              '暂无可配置的 Codex OAuth 账号',
-                            )}
-                          </div>
-                        ) : (
-                          codexOAuthPolicyAccounts.map((account) => {
-                            const fingerprintMode = account.codex_fingerprint_mode ?? 'session';
-                            return (
-                              <div
-                                className="qs-codex-oauth-policy-summary__row"
-                                key={account.id}
-                              >
-                                <span
-                                  className="qs-codex-oauth-policy-summary__account"
-                                  title={account.email}
-                                >
-                                  {account.email}
-                                </span>
-                                <span className="qs-codex-oauth-policy-summary__value">
-                                  {account.codex_cli_only === true
-                                    ? t('codex.oauthPolicy.officialOnlyShort', '仅官方')
-                                    : t(
-                                        'codex.oauthPolicy.officialOnlyOff',
-                                        '官方客户端：关闭',
-                                      )}
-                                </span>
-                                <span className="qs-codex-oauth-policy-summary__value">
-                                  {account.codex_cli_only_allow_app_server === true
-                                    ? t('codex.oauthPolicy.appServerShort', '第三方客户端：允许')
-                                    : t('codex.oauthPolicy.appServerOff', '第三方客户端：关闭')}
-                                </span>
-                                <span className="qs-codex-oauth-policy-summary__value">
-                                  {codexOAuthFingerprintLabels[fingerprintMode]}
-                                </span>
-                              </div>
-                            );
-                          })
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
                 {isWindows && (
                   <>
@@ -3464,13 +3360,6 @@ export function QuickSettingsPopover({ type }: QuickSettingsPopoverProps) {
         <Settings size={14} />
       </button>
       {overlayContent && createPortal(overlayContent, document.body)}
-      {type === 'codex' && codexOAuthPolicyModalOpen && (
-        <CodexOAuthPolicyModal
-          accounts={codexAccounts}
-          onAccountsChange={setCodexAccounts}
-          onClose={() => setCodexOAuthPolicyModalOpen(false)}
-        />
-      )}
     </div>
   );
 }

@@ -236,6 +236,9 @@ pub fn get_data_dir() -> Result<PathBuf, String> {
         }
     }
 
+    #[cfg(test)]
+    let data_dir = crate::modules::test_support::fallback_data_dir();
+    #[cfg(not(test))]
     let data_dir = resolve_data_dir()?;
 
     if !data_dir.exists() {

@@ -246,8 +246,8 @@ func TestCodexWebsocketsExecuteResponsesLiteDoesNotInjectImageGenerationTool(t *
 		if got := gjson.GetBytes(payload, "input.0.tools.0.name").String(); got != "exec" {
 			t.Fatalf("responses-lite custom tool = %q, want exec: %s", got, payload)
 		}
-		if gjson.GetBytes(payload, "input.1.namespace").Exists() {
-			t.Fatalf("non-call input namespace was not removed: %s", payload)
+		if got := gjson.GetBytes(payload, "input.1.namespace").String(); got != "stale" {
+			t.Fatalf("input namespace must follow upstream passthrough, got %q: %s", got, payload)
 		}
 		if got := gjson.GetBytes(payload, "client_metadata.ws_request_header_x_openai_internal_codex_responses_lite").String(); got != "true" {
 			t.Fatalf("responses-lite metadata = %q, want true; payload=%s", got, payload)

@@ -86,6 +86,8 @@ pub struct CodexQuickConfig {
 pub enum CodexAppSpeed {
     Standard,
     Fast,
+    /// 官方新增的“超高速”档位（service tier id: `ultrafast`）。
+    Ultrafast,
 }
 
 impl Default for CodexAppSpeed {
@@ -152,6 +154,12 @@ pub struct CodexAccount {
     /// Direct-start model for official DeepSeek Responses (`deepseek-v4-flash` / `deepseek-v4-pro`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api_startup_model: Option<String>,
+    /// 网关模式下用于生图转发的 GPT(OAuth) 账号池。
+    ///
+    /// 对话仍由本账号的上游模型处理；生图请求（images 端点与对话内触发的生图）
+    /// 交给这里的账号执行，走 `gpt-5.5` 基础模型 + `gpt-image-2.5` 的原有链路。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub api_image_generation_account_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bound_oauth_account_id: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
@@ -174,11 +182,12 @@ pub struct CodexAccount {
     pub account_note: Option<String>,
     /// Codex OAuth 设备指纹收敛模式。未设置时按 `off` 处理。
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    // Legacy import/export metadata only; never projected into runtime credentials.
     pub codex_fingerprint_mode: Option<String>,
-    /// 仅允许该 OAuth 账号接收官方 Codex 客户端请求。
+    /// 历史备份元数据；不再限制客户端或下发到 sidecar。
     #[serde(default, skip_serializing_if = "is_false")]
     pub codex_cli_only: bool,
-    /// 该账号额外允许 Codex app-server 第三方客户端请求。
+    /// 历史备份元数据；不再作为客户端放行策略。
     #[serde(default, skip_serializing_if = "is_false")]
     pub codex_cli_only_allow_app_server: bool,
     #[serde(
@@ -566,6 +575,7 @@ impl CodexAccount {
             api_vision_routing_model: None,
             api_instance_access_mode: None,
             api_startup_model: None,
+            api_image_generation_account_ids: Vec::new(),
             bound_oauth_account_id: None,
             bound_oauth_use_local_gateway: false,
             user_id: None,

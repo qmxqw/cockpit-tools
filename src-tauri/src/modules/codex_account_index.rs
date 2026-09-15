@@ -571,18 +571,6 @@ fn read_codex_client_policy_bool(value: &serde_json::Value, key: &str) -> Option
     })
 }
 
-pub(crate) fn resolved_codex_fingerprint_mode(account: &CodexAccount) -> &'static str {
-    resolved_codex_fingerprint_mode_value(account.codex_fingerprint_mode.as_deref())
-}
-
-fn resolved_codex_fingerprint_mode_value(raw: Option<&str>) -> &'static str {
-    match raw.map(str::trim).map(str::to_ascii_lowercase).as_deref() {
-        Some("device") => "device",
-        Some("off") => "off",
-        Some("full") => "full",
-        _ => "session",
-    }
-}
 
 fn read_json_i64(value: &serde_json::Value, keys: &[&str]) -> Option<i64> {
     keys.iter().find_map(|key| {
@@ -936,7 +924,7 @@ fn load_account_with_summary(
             .unwrap_or(false);
         // 绑定 OAuth 时强制关闭本地网关标志，避免误走旧「禁生图 + 本地网关」路径。
         let cleared_bound_oauth_gateway = clear_bound_oauth_local_gateway_flag(&mut account);
-        let migrated_wire_api = migrate_apikey_fun_wire_api(&mut account);
+        let migrated_apikey_fun = migrate_apikey_fun_account(&mut account);
         let migrated_deepseek = enforce_deepseek_responses_account(&mut account);
         let migrated_websocket = normalize_api_key_websocket_capability(&mut account);
         let cleared_retired_app_server_preflight =
@@ -945,7 +933,7 @@ fn load_account_with_summary(
             return Ok(None);
         }
         if needs_rotation
-            || migrated_wire_api
+            || migrated_apikey_fun
             || migrated_deepseek
             || migrated_websocket
             || cleared_retired_app_server_preflight
@@ -973,7 +961,7 @@ fn load_account_with_summary(
         .map_err(|error| format!("账号详情不是有效 JSON ({}): {}", path.display(), error))?;
     let mut account = parse_codex_account_compat(value.clone(), account_id, summary)?
         .ok_or_else(|| format!("账号详情缺少可识别凭据 ({})", path.display()))?;
-    let _ = migrate_apikey_fun_wire_api(&mut account);
+    let _ = migrate_apikey_fun_account(&mut account);
     let _ = enforce_deepseek_responses_account(&mut account);
     let _ = clear_bound_oauth_local_gateway_flag(&mut account);
     let _ = clear_retired_app_server_preflight_reauth(&mut account);
@@ -1246,7 +1234,6 @@ pub fn list_accounts() -> Vec<CodexAccount> {
             ));
         }
     }
-    spawn_fingerprint_default_session_resync();
     accounts
 }
 
@@ -1301,7 +1288,6 @@ pub fn list_accounts_checked() -> Result<Vec<CodexAccount>, String> {
         save_account_index(&index)?;
     }
 
-    spawn_fingerprint_default_session_resync();
     attach_latest_quota_pool_updated_at(&mut accounts);
     Ok(accounts)
 }
@@ -1336,4 +1322,3 @@ fn attach_latest_quota_pool_updated_at(accounts: &mut [CodexAccount]) {
         }
     }
 }
-

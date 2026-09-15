@@ -589,6 +589,38 @@ fn desktop_login_component_cleanup_removes_only_owned_cache_dirs() {
     }
 
     #[test]
+    fn migrates_legacy_apikey_fun_urls_on_claude_accounts() {
+        let mut account = test_desktop_account(
+            "claude-legacy-apikey",
+            "relay@example.com",
+            None,
+            None,
+            1,
+            1,
+        );
+        account.api_base_url = Some("https://api.apikey.fun".to_string());
+        account.api_provider_website = Some("https://apikey.fun".to_string());
+        account.api_provider_api_key_url =
+            Some("https://apikey.fun/register?aff=cockpit".to_string());
+
+        assert!(migrate_legacy_apikey_fun_urls(&mut account));
+        assert_eq!(
+            account.api_base_url.as_deref(),
+            Some("https://api.apikey.fan")
+        );
+        assert_eq!(
+            account.api_provider_website.as_deref(),
+            Some("https://apikey.fan")
+        );
+        assert_eq!(
+            account.api_provider_api_key_url.as_deref(),
+            Some("https://apikey.fan/register?aff=cockpit")
+        );
+
+        assert!(!migrate_legacy_apikey_fun_urls(&mut account));
+    }
+
+    #[test]
     fn merges_same_desktop_identity_without_touching_non_desktop_accounts() {
         let mut base = test_desktop_account(
             "claude_desktop_old",
@@ -645,4 +677,67 @@ fn desktop_login_component_cleanup_removes_only_owned_cache_dirs() {
             merged.tags,
             Some(vec!["max".to_string(), "work".to_string()])
         );
+    }
+
+    fn make_profile_dir(label: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "cockpit-claude-profile-{}-{}-{}",
+            label,
+            std::process::id(),
+            now_ts_ms()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).expect("create profile dir");
+        dir
+    }
+
+    #[test]
+    fn desktop_profile_lock_probe_accepts_unlocked_profile() {
+        let profile_dir = make_profile_dir("lock-probe-unlocked");
+        fs::create_dir_all(profile_dir.join("Network")).expect("create Network dir");
+        fs::create_dir_all(profile_dir.join("Local Storage").join("leveldb"))
+            .expect("create leveldb dir");
+        fs::create_dir_all(profile_dir.join("Session Storage")).expect("create session storage dir");
+        fs::write(profile_dir.join("Network").join("Cookies"), b"cookie-bytes")
+            .expect("write cookies");
+        fs::write(
+            profile_dir.join("Local Storage").join("leveldb").join("LOCK"),
+            b"",
+        )
+        .expect("write leveldb lock");
+        fs::write(profile_dir.join("Session Storage").join("LOCK"), b"")
+            .expect("write session lock");
+
+        assert!(find_locked_desktop_profile_path(&profile_dir).is_none());
+        assert!(wait_for_desktop_profile_release(&profile_dir, 2, 1));
+        ensure_desktop_profile_ready_for_backup(&profile_dir)
+            .expect("unlocked profile should pass the backup gate");
+        assert_eq!(
+            fs::read(profile_dir.join("Network").join("Cookies")).expect("read cookies"),
+            b"cookie-bytes",
+            "探测不能改动源文件"
+        );
+
+        fs::remove_dir_all(&profile_dir).expect("cleanup profile dir");
+    }
+
+    #[test]
+    fn desktop_profile_lock_probe_skips_missing_files() {
+        let profile_dir = make_profile_dir("lock-probe-missing");
+        assert!(find_locked_desktop_profile_path(&profile_dir).is_none());
+        ensure_desktop_profile_ready_for_backup(&profile_dir)
+            .expect("profile without lock files should pass the backup gate");
+        fs::remove_dir_all(&profile_dir).expect("cleanup profile dir");
+    }
+
+    #[test]
+    fn desktop_profile_lock_sensitive_paths_follow_profile_items() {
+        // 敏感文件名必须落在快照会复制的顶层项里，避免写错路径导致探测永远不触发。
+        for relative in CLAUDE_DESKTOP_LOCK_SENSITIVE_PATHS {
+            let top_level = relative.split('/').next().unwrap_or_default();
+            assert!(
+                CLAUDE_DESKTOP_PROFILE_ITEMS.contains(&top_level),
+                "{relative} 的顶层目录 {top_level} 不在 CLAUDE_DESKTOP_PROFILE_ITEMS 中"
+            );
+        }
     }

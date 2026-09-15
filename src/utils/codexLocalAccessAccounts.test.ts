@@ -134,11 +134,11 @@ test("quota_low_first: sorts low quota first, and on tie sorts earlier quota res
 test("expiry_soon_first: sorts by effective expiry ascending", () => {
   const accPaidFar = createMockAccount("paid-far", {
     plan_type: "pro",
-    subscription_active_until: "2026-10-01T00:00:00Z",
+    subscription_active_until: "2030-10-01T00:00:00Z",
   });
   const accPaidSoon = createMockAccount("paid-soon", {
     plan_type: "pro",
-    subscription_active_until: "2026-09-15T00:00:00Z",
+    subscription_active_until: "2030-09-15T00:00:00Z",
   });
   const accFree = createMockAccount("free-account", {
     plan_type: "free",
@@ -253,5 +253,4 @@ test("resolveApiServingFirstAccountId respects backend activeServingAccountId", 
   const resolved = resolveApiServingFirstAccountId([acc1, acc2], state, collection);
   assert.equal(resolved, "acc-2");
 });
-
 

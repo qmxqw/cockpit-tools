@@ -235,24 +235,6 @@ func (s *relayServer) writeExecutorError(c *gin.Context, err error) {
 			return
 		}
 	}
-	var transient interface{ IsTransientRequestScoped() bool }
-	if errors.As(err, &transient) && transient.IsTransientRequestScoped() {
-		message := errorMessage(err)
-		var body struct {
-			Error struct {
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal([]byte(message), &body) == nil && body.Error.Message != "" {
-			message = body.Error.Message
-		}
-		c.JSON(status, gin.H{"error": gin.H{
-			"message": message,
-			"type":    "server_error",
-			"code":    "server_error",
-		}})
-		return
-	}
 	writeAPIError(c, status, errorMessage(err), code)
 }
 
@@ -634,6 +616,8 @@ func splitResponsesConcatenatedJSONDocuments(payload []byte) ([][]byte, bool) {
 }
 
 func writeResponsesSSEFrame(w io.Writer, chunk []byte) error {
+	// 出口统一清洗第三方推理项，避免客户端把不兼容的 reasoning content 落盘。
+	chunk = normalizeResponsesReasoningContentSSE(chunk)
 	payload, ok := responsesSSEDataPayload(chunk)
 	if !ok {
 		return writeResponsesSSEChunk(w, chunk)

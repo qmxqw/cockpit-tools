@@ -617,6 +617,9 @@ fn sidecar_api_key_manifest_values(collection: &CodexLocalAccessCollection) -> V
             "providerGateway": item.provider_gateway.clone(),
             "modelRouting": item.model_routing.clone(),
             "boundOAuth": bound_oauth,
+            "imageGenerationAccountIds": normalize_account_id_list(
+                collection.image_generation_account_ids.clone(),
+            ),
             "responsesWebsockets": collection.responses_websockets_enabled
                 && item.provider_gateway.is_none()
                 && item.model_routing.is_none(),
@@ -759,6 +762,7 @@ fn validate_api_key_account_scope_update(
 
 fn codex_app_speed_service_tier(speed: &CodexAppSpeed) -> Option<&'static str> {
     match speed {
+        CodexAppSpeed::Ultrafast => Some("ultrafast"),
         CodexAppSpeed::Fast => Some("priority"),
         CodexAppSpeed::Standard => None,
     }
@@ -778,6 +782,12 @@ fn effective_api_key_account_ids(
 fn effective_sidecar_account_ids(collection: &CodexLocalAccessCollection) -> Vec<String> {
     let mut account_ids = collection.account_ids.clone();
     let mut seen: HashSet<String> = account_ids.iter().cloned().collect();
+    // 生图转发账号不参与对话路由，但必须进入 sidecar 账号清单才能拿到凭据。
+    for account_id in &collection.image_generation_account_ids {
+        if seen.insert(account_id.clone()) {
+            account_ids.push(account_id.clone());
+        }
+    }
     for api_key in &collection.api_keys {
         for account_id in &api_key.account_ids {
             if seen.insert(account_id.clone()) {
@@ -1162,15 +1172,7 @@ fn sidecar_auth_json_for_account_with_metered_feature_patterns(
         "excluded_models": excluded_models,
         "disable_cooling": collection.disable_cooling,
         "websockets": collection.responses_websockets_enabled,
-        "codex_cli_only": account.codex_cli_only,
-        "codex_cli_only_allow_app_server": account.codex_cli_only_allow_app_server,
-        "codex_cli_only_allow_app_server_clients": config::get_user_config()
-            .codex_cli_only_allow_app_server_clients,
     });
-    if account_uses_codex_fingerprint_convergence(account) {
-        value["codex_fingerprint_mode"] =
-            json!(crate::modules::codex_account::resolved_codex_fingerprint_mode(account));
-    }
     if let Some(account_id) = account_id {
         value["account_id"] = json!(account_id);
     }
@@ -1317,31 +1319,6 @@ pub fn sync_sidecar_auth_file_for_account(account: &CodexAccount) -> Result<(), 
     let result = sync_sidecar_auth_file_for_account_with_task_source(account, false);
     sync_provider_gateway_auth_files_for_account_in_background(account.clone());
     result
-}
-
-/// 通用设置中的 Codex 客户端策略变更后，后台刷新正在使用的 OAuth auth 文件。
-/// 账号列表与文件写入不阻塞设置页保存；sidecar 文件观察器会随后加载新元数据。
-pub fn schedule_codex_client_policy_sync() {
-    if CODEX_CLIENT_POLICY_SYNC_RUNNING
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-    std::thread::spawn(|| {
-        for account in crate::modules::codex_account::list_accounts() {
-            if account.is_api_key_auth() || account.is_agent_identity_auth() {
-                continue;
-            }
-            if let Err(error) = sync_sidecar_auth_file_for_account(&account) {
-                logger::log_codex_api_warn(&format!(
-                    "[CodexLocalAccess] 后台刷新 Codex 客户端策略失败: account_id={}, error={}",
-                    account.id, error
-                ));
-            }
-        }
-        CODEX_CLIENT_POLICY_SYNC_RUNNING.store(false, Ordering::Release);
-    });
 }
 
 pub fn sync_sidecar_auth_file_for_account_with_current_task(
@@ -1966,79 +1943,6 @@ fn format_upstream_response_failed_error(signal: &UpstreamResponseFailedSignal) 
     )
 }
 
-async fn start_legacy_gateway_locked(
-    collection: &CodexLocalAccessCollection,
-) -> Result<(), String> {
-    let bind_host = bind_host_for_collection(collection).to_string();
-    let port = collection.port;
-    let listener = bind_gateway_listener(&bind_host, port)
-        .await
-        .map_err(|error| format_gateway_bind_error(&bind_host, port, &error))?;
-    let (shutdown_sender, mut shutdown_receiver) = watch::channel(false);
-    let task = tokio::spawn(async move {
-        let listener = listener;
-        loop {
-            tokio::select! {
-                changed = shutdown_receiver.changed() => {
-                    if changed.is_ok() && *shutdown_receiver.borrow() {
-                        break;
-                    }
-                    if changed.is_err() {
-                        break;
-                    }
-                }
-                accept_result = listener.accept() => {
-                    match accept_result {
-                        Ok((stream, addr)) => {
-                            tokio::spawn(async move {
-                                if let Err(error) = handle_connection(stream, addr).await {
-                                    if is_client_disconnect_error_message(&error) {
-                                        logger::log_codex_api_info(&format!(
-                                            "[CodexLocalAccess][legacy] 客户端已断开，停止写入响应: {}",
-                                            error
-                                        ));
-                                    } else {
-                                        logger::log_codex_api_warn(&format!(
-                                            "[CodexLocalAccess][legacy] 处理网关请求失败: {}",
-                                            error
-                                        ));
-                                    }
-                                }
-                            });
-                        }
-                        Err(error) => {
-                            logger::log_codex_api_warn(&format!(
-                                "[CodexLocalAccess][legacy] 网关监听 accept 失败: {}",
-                                error
-                            ));
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    });
-
-    logger::log_codex_api_info(&format!(
-        "[CodexLocalAccess][legacy] API 服务 legacy 网关已启动: bind={}:{} base={}",
-        bind_host,
-        port,
-        build_base_url(port)
-    ));
-
-    let mut runtime = gateway_runtime().lock().await;
-    runtime.running = true;
-    runtime.actual_port = Some(port);
-    runtime.actual_bind_host = Some(bind_host);
-    runtime.sidecar_config_fingerprint = None;
-    runtime.last_error = None;
-    runtime.shutdown_sender = Some(shutdown_sender);
-    runtime.task = Some(task);
-    runtime.sidecar_monitor_task = None;
-    runtime.sidecar_generation = None;
-    runtime.sidecar_child = None;
-    Ok(())
-}
 
 fn sidecar_local_account_usable_for_start(account: &CodexAccount) -> bool {
     account.is_api_key_auth()
@@ -2266,6 +2170,8 @@ fn prepare_sidecar_launch_config_in_dir_sync(
         "debugLogs": collection.debug_logs,
         "immediateSseResponse": collection.immediate_sse_response,
         "maxConcurrentImageRequests": collection.max_concurrent_image_requests,
+        "maxAccountConcurrency": collection.max_account_concurrency,
+        "accountConcurrencyWaitMs": collection.account_concurrency_wait_ms,
     });
 
     let mut config = Map::new();
@@ -2307,7 +2213,6 @@ fn prepare_sidecar_launch_config_in_dir_sync(
         json!({
             "optimize-multi-agent-v2": true,
             "stream-bootstrap-buffering": api_service,
-            "api-service-compatibility": api_service,
         }),
     );
     config.insert("ws-auth".to_string(), json!(true));
@@ -2364,7 +2269,7 @@ fn prepare_sidecar_launch_config_in_dir_sync(
             json!({ "codex": collection.excluded_models.clone() }),
         );
     }
-    if !collection.model_aliases.is_empty() {
+    if !collection.model_aliases.is_empty() && !collection.suppress_oauth_model_alias {
         config.insert(
             "oauth-model-alias".to_string(),
             json!({ "codex": sidecar_model_alias_values(collection) }),

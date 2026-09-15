@@ -713,8 +713,10 @@
         CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER,
         CODEX_LOCAL_ACCESS_DISABLE_HOSTED_IMAGE_GENERATION_HEADER_VALUE,
         CODEX_LOCAL_ACCESS_MODEL_CATALOG_FILE, CODEX_PROFILE_AUTH_FILE, CODEX_PROFILE_CONFIG_FILE,
-        CODEX_PROVIDER_MODEL_BACKUP_FILE, CODEX_PROVIDER_MODEL_CATALOG_FILE,
-        DEFAULT_MAX_RETRY_INTERVAL_MS, DEFAULT_MODEL_PRICING_VERSION,
+        CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID, CODEX_PROVIDER_MODEL_BACKUP_FILE,
+        CODEX_PROVIDER_MODEL_CATALOG_FILE,
+        DEFAULT_ACCOUNT_CONCURRENCY_WAIT_MS, DEFAULT_MAX_RETRY_INTERVAL_MS,
+        DEFAULT_MODEL_PRICING_VERSION,
         DEFAULT_SESSION_AFFINITY_TTL_MS, MAX_HTTP_REQUEST_BYTES,
         STATE_RECENT_USAGE_EVENT_LIMIT,
     };
@@ -967,12 +969,14 @@
             image_generation_mode: CodexLocalAccessImageGenerationMode::default(),
             image_generation_model: DEFAULT_CODEX_IMAGE_GENERATION_MODEL.to_string(),
             image_generation_account_policies: HashMap::new(),
+            image_generation_account_ids: Vec::new(),
             gateway_mode: CodexLocalAccessGatewayMode::default(),
             upstream_proxy_url: None,
             routing_strategy: CodexLocalAccessRoutingStrategy::default(),
             custom_routing_rules: Vec::new(),
             account_model_rules: Vec::new(),
             model_aliases: Vec::new(),
+            suppress_oauth_model_alias: false,
             model_pricing_version: DEFAULT_MODEL_PRICING_VERSION,
             model_pricings: Vec::new(),
             excluded_models: Vec::new(),
@@ -990,12 +994,62 @@
             debug_logs: true,
             immediate_sse_response: false,
             max_concurrent_image_requests: 1,
+            max_account_concurrency: 0,
+            account_concurrency_wait_ms: DEFAULT_ACCOUNT_CONCURRENCY_WAIT_MS,
             bound_oauth_account_id: None,
             bound_oauth_quota_reserve: None,
             account_ids,
             created_at: 0,
             updated_at: 0,
         }
+    }
+
+    #[test]
+    fn provider_gateway_model_aliases_stay_off_the_oauth_channel() {
+        let dir = make_temp_dir("codex-provider-gateway-alias");
+        let mut collection = test_local_access_collection(vec!["provider-account".to_string()]);
+        collection.model_aliases = vec![super::CodexLocalAccessModelAlias {
+            source_model: "deepseek-flash".to_string(),
+            alias: "gpt-5.5".to_string(),
+            fork: false,
+        }];
+        // 实例供应商网关会标记该字段：别名只用于对话改写，不能写进 OAuth 通道。
+        collection.suppress_oauth_model_alias = true;
+
+        super::prepare_sidecar_launch_config_in_dir_sync(
+            &collection,
+            dir.clone(),
+            HashMap::new(),
+            None,
+            HashMap::new(),
+            true,
+            None,
+        )
+        .expect("prepare provider gateway sidecar config");
+
+        let config: Value = serde_json::from_str(
+            &fs::read_to_string(super::sidecar_config_path(&dir)).expect("read sidecar config"),
+        )
+        .expect("parse sidecar config");
+        assert!(
+            config.get("oauth-model-alias").is_none(),
+            "provider gateway must not rewrite models on the OAuth channel: {config}"
+        );
+
+        let manifest: Value = serde_json::from_str(
+            &fs::read_to_string(super::sidecar_manifest_path(&dir)).expect("read sidecar manifest"),
+        )
+        .expect("parse sidecar manifest");
+        assert_eq!(
+            manifest
+                .get("modelAliases")
+                .and_then(Value::as_array)
+                .map(Vec::len),
+            Some(1),
+            "client-visible model aliases must stay in the manifest"
+        );
+
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
@@ -1191,6 +1245,37 @@
             enabled.get("responsesWebsockets").and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn sidecar_manifest_exposes_image_generation_accounts() {
+        let mut collection = test_local_access_collection(vec!["chat-account".to_string()]);
+        let mut api_key = build_local_access_api_key(Some("DeepSeek"));
+        api_key.key = "deepseek-key".to_string();
+        api_key.inherit_account_pool = Some(false);
+        api_key.account_ids = vec!["chat-account".to_string()];
+        collection.api_keys = vec![api_key];
+        collection.image_generation_account_ids =
+            vec!["gpt-image-account".to_string(), "gpt-image-account".to_string()];
+
+        let manifest_values = sidecar_api_key_manifest_values(&collection);
+        let scoped = manifest_values
+            .iter()
+            .find(|value| value.get("key").and_then(Value::as_str) == Some("deepseek-key"))
+            .expect("provider gateway key should be emitted");
+        let image_account_ids = scoped
+            .get("imageGenerationAccountIds")
+            .and_then(Value::as_array)
+            .expect("imageGenerationAccountIds should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert_eq!(image_account_ids, vec!["gpt-image-account"]);
+
+        // 生图账号不参与对话路由，但必须进入 sidecar 账号清单以写入凭据。
+        assert!(super::effective_sidecar_account_ids(&collection)
+            .iter()
+            .any(|account_id| account_id == "gpt-image-account"));
     }
 
     #[test]
@@ -3325,6 +3410,35 @@ http_headers = { "x-cockpit-instance-id" = "default" }
     }
 
     #[test]
+    fn sidecar_projection_ignores_legacy_fingerprint_without_mutating_account() {
+        for mode in [None, Some("off"), Some("device"), Some("session"), Some("full")] {
+            let mut account = CodexAccount::new(
+                "legacy-fingerprint".into(),
+                "legacy@example.com".into(),
+                CodexTokens {
+                    id_token: String::new(),
+                    access_token: "access-token".into(),
+                    refresh_token: Some("refresh-token".into()),
+                },
+            );
+            account.codex_fingerprint_mode = mode.map(str::to_string);
+            account.codex_cli_only = true;
+            account.codex_cli_only_allow_app_server = true;
+            let collection = test_local_access_collection(vec![account.id.clone()]);
+            let projected = sidecar_auth_json_for_account(&account, &collection, None);
+            assert!(projected.get("codex_fingerprint_mode").is_none());
+            assert!(projected.get("codex_cli_only").is_none());
+            assert!(projected.get("codex_cli_only_allow_app_server").is_none());
+            assert!(projected.get("codex_cli_only_allow_app_server_clients").is_none());
+            assert_eq!(account.codex_fingerprint_mode.as_deref(), mode);
+            assert!(account.codex_cli_only);
+            assert!(account.codex_cli_only_allow_app_server);
+            assert_eq!(account.tokens.refresh_token.as_deref(), Some("refresh-token"));
+            assert_eq!(projected["refresh_owner"], "cockpit_token_authority");
+        }
+    }
+
+    #[test]
     fn provider_gateway_runtime_auth_sync_rewrites_access_token_without_refresh_token() {
         let sidecar_dir = make_temp_dir("codex-provider-runtime-auth-sync");
         let auths_dir = sidecar_auths_dir(&sidecar_dir);
@@ -3487,6 +3601,11 @@ http_headers = { "x-cockpit-instance-id" = "default" }
         );
         assert!(account.api_supports_websockets);
         assert_eq!(account.api_wire_api.as_deref(), Some("responses"));
+        assert_eq!(account.api_provider_name.as_deref(), Some("OpenAI"));
+        assert_eq!(
+            account.api_provider_id.as_deref(),
+            Some(CODEX_LOCAL_ACCESS_RUNTIME_PROVIDER_ID)
+        );
     }
 
     #[test]
@@ -3592,4 +3711,28 @@ http_headers = { "x-cockpit-instance-id" = "default" }
             &collection,
             "mixed-local-key"
         ));
+    }
+
+    /// 混合路由的可见模型清单由路由配置推导，因此不依赖用户是否开启「模型管理」。
+    #[test]
+    fn mixed_model_catalog_definitions_include_official_models_without_routes() {
+        let routing = crate::models::CodexInstanceModelRouting {
+            enabled: true,
+            version: 1,
+            routes: Vec::new(),
+        };
+        let definitions = super::mixed_model_catalog_definitions(&routing)
+            .expect("build mixed catalog definitions");
+        assert!(!definitions.is_empty(), "至少包含官方模型");
+        assert!(
+            definitions.iter().all(|(model_id, _)| !model_id.contains('/')),
+            "没有路由配置时不应出现带命名空间前缀的模型"
+        );
+        assert!(
+            definitions
+                .iter()
+                .any(|(model_id, display_name)| model_id.starts_with("gpt-")
+                    && !display_name.trim().is_empty()),
+            "官方模型需要带展示名"
+        );
     }

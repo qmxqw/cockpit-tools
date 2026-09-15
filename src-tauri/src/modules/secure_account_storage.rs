@@ -65,6 +65,49 @@ fn cipher() -> Result<Aes256Gcm, String> {
         .map_err(|e| format!("初始化账号详情加密失败: {}", e))
 }
 
+/// Recovery must not create a missing key, rotate credentials or restore a
+/// backup over the source file. The caller supplies the key belonging to the
+/// account directory, so background work cannot drift to another profile.
+pub(crate) fn read_account_file_readonly<T: DeserializeOwned>(
+    path: &Path,
+    key_path: &Path,
+) -> Result<T, String> {
+    let content = fs::read_to_string(path).map_err(|e| format!("读取账号详情失败: {}", e))?;
+    if let Ok(envelope) = serde_json::from_str::<SecureAccountEnvelope>(&content) {
+        let raw =
+            fs::read_to_string(key_path).map_err(|e| format!("读取账号详情加密密钥失败: {}", e))?;
+        let key = general_purpose::STANDARD
+            .decode(raw.trim())
+            .map_err(|e| format!("解析账号详情加密密钥失败: {}", e))?;
+        let cipher = Aes256Gcm::new_from_slice(&key)
+            .map_err(|e| format!("初始化账号详情加密失败: {}", e))?;
+        return decrypt_envelope(&envelope, cipher);
+    }
+    serde_json::from_str(&content).map_err(|e| format!("解析账号详情失败: {}", e))
+}
+
+fn decrypt_envelope<T: DeserializeOwned>(
+    envelope: &SecureAccountEnvelope,
+    cipher: Aes256Gcm,
+) -> Result<T, String> {
+    if envelope.version != VERSION || envelope.algorithm != "AES-256-GCM" {
+        return Err("账号详情加密版本不受支持".to_string());
+    }
+    let nonce = general_purpose::STANDARD
+        .decode(envelope.nonce.trim())
+        .map_err(|e| format!("解析账号详情 nonce 失败: {}", e))?;
+    if nonce.len() != 12 {
+        return Err("账号详情 nonce 长度无效".to_string());
+    }
+    let ciphertext = general_purpose::STANDARD
+        .decode(envelope.ciphertext.trim())
+        .map_err(|e| format!("解析账号详情密文失败: {}", e))?;
+    let plaintext = cipher
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
+        .map_err(|e| format!("解密账号详情失败: {:?}", e))?;
+    serde_json::from_slice(&plaintext).map_err(|e| format!("解析账号详情明文失败: {}", e))
+}
+
 pub fn serialize_account_file<T: Serialize>(kind: &str, account: &T) -> Result<String, String> {
     let plaintext =
         serde_json::to_vec(account).map_err(|e| format!("序列化账号详情失败: {}", e))?;
@@ -92,23 +135,7 @@ pub fn deserialize_account_file<T: DeserializeOwned>(
     content: &str,
 ) -> Result<(T, bool), String> {
     if let Ok(envelope) = serde_json::from_str::<SecureAccountEnvelope>(content) {
-        if envelope.version != VERSION {
-            return Err("账号详情加密版本不受支持".to_string());
-        }
-        let nonce = general_purpose::STANDARD
-            .decode(envelope.nonce.trim())
-            .map_err(|e| format!("解析账号详情 nonce 失败: {}", e))?;
-        if nonce.len() != 12 {
-            return Err("账号详情 nonce 长度无效".to_string());
-        }
-        let ciphertext = general_purpose::STANDARD
-            .decode(envelope.ciphertext.trim())
-            .map_err(|e| format!("解析账号详情密文失败: {}", e))?;
-        let plaintext = cipher()?
-            .decrypt(Nonce::from_slice(&nonce), ciphertext.as_ref())
-            .map_err(|e| format!("解密账号详情失败: {:?}", e))?;
-        let value = serde_json::from_slice::<T>(&plaintext)
-            .map_err(|e| format!("解析账号详情明文失败: {}", e))?;
+        let value = decrypt_envelope(&envelope, cipher()?)?;
         let needs_rotation =
             chrono::Utc::now().timestamp() - envelope.encrypted_at > ROTATION_SECONDS;
         return Ok((value, needs_rotation));

@@ -12,7 +12,8 @@ use super::{
     get_current_account_from_loaded, import_from_json, is_loopback_http_base_url,
     is_managed_auth_refresh_due, is_pending_oauth_account, list_accounts_checked, load_account,
     load_account_index, looks_like_sub2api_export, managed_account_runtime_tokens_need_refresh,
-    merge_existing_auth_file_value, now_timestamp, parse_agent_identity_from_value,
+    merge_existing_auth_file_value, migrate_apikey_fun_account, now_timestamp,
+    parse_agent_identity_from_value,
     parse_auth_file_last_refresh, parse_codex_account_compat, parse_line_delimited_json_values,
     prepare_account_for_injection_from_auth_dir, read_api_provider_from_config_toml,
     read_experimental_model_definitions, read_managed_projection_from_dir,
@@ -863,17 +864,10 @@ fn reads_sub2api_codex_fingerprint_mode_from_extra() {
         .as_deref(),
         Some("session")
     );
+    assert_eq!(super::read_codex_fingerprint_mode(&serde_json::json!({})), None);
     assert_eq!(
-        super::resolved_codex_fingerprint_mode_value(None),
-        "session"
-    );
-    assert_eq!(
-        super::resolved_codex_fingerprint_mode_value(Some("SESSION")),
-        "session"
-    );
-    assert_eq!(
-        super::resolved_codex_fingerprint_mode_value(Some("off")),
-        "off"
+        super::read_codex_fingerprint_mode(&serde_json::json!({"codex_fingerprint_mode":"off"})).as_deref(),
+        Some("off")
     );
 }
 
