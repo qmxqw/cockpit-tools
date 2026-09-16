@@ -13,12 +13,19 @@ type Translate = {
 function CodexQuotaMiniRow({
   item,
   t,
+  isError,
+  errorTooltip,
 }: {
   item: UnifiedQuotaMetric;
   t: Translate;
+  isError?: boolean;
+  errorTooltip?: string;
 }) {
   const stats = item.windowStats;
   const showProgress = item.showProgress !== false;
+  const resetTooltip = isError && errorTooltip ? errorTooltip : undefined;
+  const resetClass = `codex-quota-mini-reset${isError ? " is-error" : ""}`;
+
   if (!showProgress) {
     return (
       <div className="codex-quota-mini" title={item.hintText}>
@@ -26,7 +33,9 @@ function CodexQuotaMiniRow({
           {item.valueText}
         </div>
         {item.resetText ? (
-          <div className="codex-quota-mini-reset">{item.resetText}</div>
+          <div className={resetClass} title={resetTooltip}>
+            {item.resetText}
+          </div>
         ) : null}
       </div>
     );
@@ -85,7 +94,9 @@ function CodexQuotaMiniRow({
         </span>
       </div>
       {item.resetText ? (
-        <div className="codex-quota-mini-reset">{item.resetText}</div>
+        <div className={resetClass} title={resetTooltip}>
+          {item.resetText}
+        </div>
       ) : null}
     </div>
   );
@@ -94,14 +105,24 @@ function CodexQuotaMiniRow({
 export function CodexQuotaMiniRows({
   items,
   t,
+  isError,
+  errorTooltip,
 }: {
   items: UnifiedQuotaMetric[];
   t: Translate;
+  isError?: boolean;
+  errorTooltip?: string;
 }) {
   return (
     <div className="codex-quota-mini-list">
       {items.map((item) => (
-        <CodexQuotaMiniRow key={item.key} item={item} t={t} />
+        <CodexQuotaMiniRow
+          key={item.key}
+          item={item}
+          t={t}
+          isError={isError}
+          errorTooltip={errorTooltip}
+        />
       ))}
     </div>
   );

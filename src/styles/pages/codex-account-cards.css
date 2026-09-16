@@ -741,6 +741,15 @@
   white-space: normal;
 }
 
+.codex-quota-mini-reset.is-error {
+  color: #ef4444;
+  cursor: help;
+}
+
+[data-theme="dark"] .codex-quota-mini-reset.is-error {
+  color: #f87171;
+}
+
 .codex-accounts-page .account-table .codex-quota-mini-list {
   min-width: 220px;
 }

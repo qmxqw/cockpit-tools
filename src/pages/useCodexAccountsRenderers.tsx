@@ -1034,6 +1034,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
                       })}
                     {!isPendingOAuthAccount &&
                       hasQuotaError &&
+                      showReauthorizeAction &&
                       renderQuotaErrorInline({
                         accountName: presentation.displayName,
                         displayText: accountIssueDisplayText,
@@ -1062,7 +1063,14 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
                         <strong>{cockpitApiAccountBalanceText}</strong>
                       </div>
                     )}
-                    {account.plan_type !== 'self_serve_business_usage_based' && <CodexQuotaMiniRows items={quotaItems} t={t} />}
+                    {account.plan_type !== 'self_serve_business_usage_based' && (
+                      <CodexQuotaMiniRows
+                        items={quotaItems}
+                        t={t}
+                        isError={hasQuotaError}
+                        errorTooltip={accountIssueDisplayText}
+                      />
+                    )}
                     <CodexTeamQuotaHistory account={account} />
                     {quotaItems.length === 0 && !cockpitApiAccountBalanceText && (
                       <div className="quota-empty">
@@ -2489,7 +2497,14 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
                         <strong>{cockpitApiAccountBalanceText}</strong>
                       </div>
                     )}
-                    {account.plan_type !== 'self_serve_business_usage_based' && <CodexQuotaMiniRows items={quotaItems} t={t} />}
+                    {account.plan_type !== 'self_serve_business_usage_based' && (
+                      <CodexQuotaMiniRows
+                        items={quotaItems}
+                        t={t}
+                        isError={hasQuotaError}
+                        errorTooltip={accountIssueDisplayText}
+                      />
+                    )}
                     <CodexTeamQuotaHistory account={account} />
                     {quotaItems.length === 0 && !cockpitApiAccountBalanceText && (
                       <span style={{ color: "var(--text-muted)", fontSize: 13 }}>
@@ -2499,6 +2514,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
                   </div>
                   {!isPendingOAuthAccount &&
                     hasQuotaError &&
+                    showReauthorizeAction &&
                     renderQuotaErrorInline({
                       accountName: presentation.displayName,
                       displayText: accountIssueDisplayText,
