@@ -31,6 +31,19 @@
   background: var(--primary-light);
 }
 
+/* 最近一次被后台自动刷新的普通账号：将账号名称显示为温和暗红色，绝对不修改任何边框 */
+.codex-account-card.is-last-refreshed .account-email,
+.codex-compact-row.is-last-refreshed .codex-compact-email {
+  color: #991b1b !important;
+  font-weight: 600 !important;
+}
+
+[data-theme="dark"] .codex-account-card.is-last-refreshed .account-email,
+[data-theme="dark"] .codex-compact-row.is-last-refreshed .codex-compact-email {
+  color: #cc6b6b !important;
+  font-weight: 600 !important;
+}
+
 .codex-account-card.new-api-exclusive,
 .codex-account-card.api-key-usage-account {
   border-color: rgba(20, 184, 166, 0.42);

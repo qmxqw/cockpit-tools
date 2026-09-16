@@ -1956,6 +1956,11 @@ pub async fn refresh_codex_quotas_batch(
     Ok(success_count as i32)
 }
 
+#[tauri::command]
+pub fn get_codex_last_background_refreshed_account_id() -> Option<String> {
+    codex_quota::get_last_background_refreshed_account_id()
+}
+
 async fn save_codex_oauth_tokens(
     tokens: CodexTokens,
     reauth_account_id: Option<&str>,

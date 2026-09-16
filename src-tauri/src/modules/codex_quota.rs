@@ -7,6 +7,26 @@ use reqwest::{Method, StatusCode};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::sync::Arc;
+use tauri::Emitter;
+
+static LAST_BACKGROUND_REFRESHED_ACCOUNT_ID: std::sync::RwLock<Option<String>> =
+    std::sync::RwLock::new(None);
+
+pub fn get_last_background_refreshed_account_id() -> Option<String> {
+    LAST_BACKGROUND_REFRESHED_ACCOUNT_ID
+        .read()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
+pub fn set_last_background_refreshed_account_id(id: Option<String>) {
+    if let Ok(mut guard) = LAST_BACKGROUND_REFRESHED_ACCOUNT_ID.write() {
+        *guard = id.clone();
+    }
+    if let Some(app) = crate::get_app_handle() {
+        let _ = app.emit("codex://last-background-refresh-changed", &id);
+    }
+}
 
 // 使用 wham/usage 端点（Quotio 使用的）
 const USAGE_URL: &str = "https://chatgpt.com/backend-api/wham/usage";
@@ -2037,6 +2057,14 @@ async fn refresh_quotas_for_account_ids_with_options_and_runtime_snapshot(
         }
         None => Arc::new(codex_account::CodexQuotaRuntimeSnapshot::empty()),
     };
+    let target_id_for_broadcast = if priority
+        == crate::modules::codex_quota_refresh_scheduler::RefreshPriority::Background
+    {
+        unique_ids.first().cloned()
+    } else {
+        None
+    };
+
     let requests = futures_util::stream::iter(attach_runtime_snapshot_to_account_ids(
         unique_ids,
         runtime_snapshot,
@@ -2075,6 +2103,11 @@ async fn refresh_quotas_for_account_ids_with_options_and_runtime_snapshot(
     .buffered(4)
     .collect::<Vec<_>>()
     .await;
+
+    if let Some(target_id) = target_id_for_broadcast {
+        set_last_background_refreshed_account_id(Some(target_id));
+    }
+
     Ok(requests)
 }
 

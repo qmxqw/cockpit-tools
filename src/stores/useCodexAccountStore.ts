@@ -163,14 +163,29 @@ interface CodexAccountState {
     startupModel?: string | null,
     imageGenerationAccountIds?: string[] | null,
   ) => Promise<CodexAccount>;
+  lastAutoRefreshedAccountId: string | null;
+  setLastAutoRefreshedAccountId: (id: string | null) => void;
+  fetchLastAutoRefreshedAccountId: () => Promise<void>;
 }
 
 export const useCodexAccountStore = create<CodexAccountState>((set, get) => ({
   accounts: initialCachedCodexAccounts,
   accountsLoaded: initialCachedCodexAccounts.length > 0,
   currentAccount: initialCachedCodexCurrentAccount,
+  lastAutoRefreshedAccountId: null,
   loading: false,
   error: null,
+
+  setLastAutoRefreshedAccountId: (id: string | null) => set({ lastAutoRefreshedAccountId: id }),
+
+  fetchLastAutoRefreshedAccountId: async () => {
+    try {
+      const id = await codexService.getLastBackgroundRefreshedAccountId();
+      set({ lastAutoRefreshedAccountId: id });
+    } catch (e) {
+      console.error('获取最后自动刷新账号失败:', e);
+    }
+  },
 
   fetchAccounts: async (options?: FetchCodexAccountsOptions) => {
     void options;

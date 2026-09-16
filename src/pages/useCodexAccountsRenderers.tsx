@@ -1,4 +1,5 @@
-import { useEffect, type ReactElement } from "react";
+import { useEffect, useMemo, type ReactElement } from "react";
+import { useCodexAccountStore } from "../stores/useCodexAccountStore";
 import { RefreshCw, Upload, Trash2, X, Power, Database, Copy, Check, Play, RotateCw, CircleAlert, Info, Calendar, Tag, Eye, EyeOff, FileText, ExternalLink, Pencil, FolderOpen, FolderPlus, ChevronRight, LogOut, Wrench, Terminal, Link2, Waypoints } from "lucide-react";
 import { isCodexGroupQuotaRefreshInherit, resolveCodexGroupQuotaAutoRefreshMinutes } from "../services/codexAccountGroupService";
 import { isCodexApiKeyAccount, isCodexAgentIdentityAccount, isCodexChatCompletionsApiKeyAccount, isCodexNewApiAccount } from "../types/codex";
@@ -328,6 +329,28 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
     toggleAccountApiKeyVisible,
     visibleApiKeyAccountIds,
   } = context;
+
+  const storeLastRefreshedId = useCodexAccountStore(
+    (state) => state.lastAutoRefreshedAccountId,
+  );
+
+  const lastRefreshedNormalAccountId = useMemo(() => {
+    if (storeLastRefreshedId && storeLastRefreshedId !== overviewCurrentAccountId) {
+      return storeLastRefreshedId;
+    }
+    let targetId: string | null = null;
+    let maxTime = 0;
+    for (const acc of filteredAccounts) {
+      if (acc.id === overviewCurrentAccountId) continue;
+      const t = Math.max(acc.usage_updated_at ?? 0, acc.quota_error?.timestamp ?? 0);
+      if (t > maxTime) {
+        maxTime = t;
+        targetId = acc.id;
+      }
+    }
+    return targetId;
+  }, [filteredAccounts, overviewCurrentAccountId, storeLastRefreshedId]);
+
   const renderCompactRows = (
       items: typeof filteredAccounts,
       groupKey?: string,
@@ -376,11 +399,12 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
         const isSubscriptionRefreshPending =
           refreshingSubscriptionAccountId === account.id ||
           refreshing === account.id;
-        return (
-          <div
-            key={groupKey ? `${groupKey}-${account.id}` : account.id}
-            className={`codex-compact-row ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""}`}
-          >
+          const isLastRefreshed = account.id === lastRefreshedNormalAccountId;
+          return (
+            <div
+              key={groupKey ? `${groupKey}-${account.id}` : account.id}
+              className={`codex-compact-row ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""} ${isLastRefreshed ? "is-last-refreshed" : ""}`}
+            >
             <div className="codex-compact-select">
               <input
                 type="checkbox"
@@ -778,10 +802,11 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
           : isFreshReserve
             ? "is-fresh-reserve"
             : "";
+        const isLastRefreshed = account.id === lastRefreshedNormalAccountId;
         return (
           <div
             key={groupKey ? `${groupKey}-${account.id}` : account.id}
-            className={`codex-account-card ${cardBorderClass} ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""} ${isPendingOAuthAccount ? "pending-auth" : ""} ${isNewApiAccount ? "new-api-exclusive" : ""} ${isQuotaAwareApiKeyAccount ? "api-key-usage-account" : ""} ${isSponsorApiKeyAccount ? "sponsor-api-account" : ""}`}
+            className={`codex-account-card ${cardBorderClass} ${isCurrent ? "current" : ""} ${isSelected ? "selected" : ""} ${isPendingOAuthAccount ? "pending-auth" : ""} ${isNewApiAccount ? "new-api-exclusive" : ""} ${isQuotaAwareApiKeyAccount ? "api-key-usage-account" : ""} ${isSponsorApiKeyAccount ? "sponsor-api-account" : ""} ${isLastRefreshed ? "is-last-refreshed" : ""}`}
           >
             <div className="card-top">
               <div className="card-select">

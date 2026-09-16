@@ -2834,6 +2834,24 @@ function MainApp() {
 
   useEffect(() => {
     let unlisten: UnlistenFn | undefined;
+    void useCodexAccountStore.getState().fetchLastAutoRefreshedAccountId();
+
+    listen<string | null>('codex://last-background-refresh-changed', (event) => {
+      useCodexAccountStore.getState().setLastAutoRefreshedAccountId(event.payload);
+      void useCodexAccountStore.getState().fetchAccounts();
+    }).then((fn) => {
+      unlisten = fn;
+    });
+
+    return () => {
+      if (unlisten) {
+        unlisten();
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
     let disposed = false;
 
     listen<QuotaAlertPayload>('quota:alert', (event) => {

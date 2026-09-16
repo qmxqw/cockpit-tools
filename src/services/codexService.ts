@@ -459,6 +459,10 @@ export async function refreshCodexQuotasBatch(
   });
 }
 
+export async function getLastBackgroundRefreshedAccountId(): Promise<string | null> {
+  return await invoke('get_codex_last_background_refreshed_account_id');
+}
+
 /** 新 OAuth 流程：开始登录 */
 export async function startCodexOAuthLogin(): Promise<CodexOAuthLoginStartResponse> {
   return await invoke('codex_oauth_login_start');
