@@ -1638,7 +1638,8 @@
   grid-column: 1 / -1;
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+  justify-content: stretch;
+  width: 100%;
   min-width: 0;
   overflow: hidden;
   padding-top: 12px;
@@ -1676,20 +1677,46 @@
 
 .codex-account-card .card-actions {
   display: flex;
-  gap: 6px;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  gap: 2px;
+  flex-wrap: nowrap !important;
   max-width: 100%;
   min-width: 0;
-  overflow-x: auto;
-  scrollbar-width: none;
+  overflow: hidden;
 }
 
 .codex-account-card .card-actions::-webkit-scrollbar {
   display: none;
 }
 
-.codex-account-card .card-action-btn {
-  flex: 0 0 32px;
+.codex-account-card .card-action-seq-badge {
+  flex: 0 1 32px;
   width: 32px;
+  min-width: 26px;
+  height: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: -0.2px;
+  line-height: 1;
+  color: var(--text-secondary);
+  pointer-events: none;
+  user-select: none;
+  cursor: default;
+}
+
+.codex-account-card .card-action-btn {
+  flex: 0 1 32px;
+  width: 32px;
+  min-width: 26px;
   height: 32px;
   border: none;
   background: var(--bg-tertiary);
@@ -1700,6 +1727,7 @@
   align-items: center;
   justify-content: center;
   transition: all 0.2s;
+  padding: 0;
 }
 
 .codex-account-card .card-action-btn:hover {

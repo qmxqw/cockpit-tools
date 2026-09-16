@@ -344,8 +344,10 @@
   gap: 12px;
 }
 .codex-accounts-page .codex-accounts-grid .codex-account-card .card-actions {
-  gap: 6px;
-  flex-wrap: wrap;
+  width: 100%;
+  justify-content: space-between;
+  gap: 2px;
+  flex-wrap: nowrap !important;
 }
 
 /* Tech-Badge - Compact */

@@ -333,6 +333,15 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
   const storeLastRefreshedId = useCodexAccountStore(
     (state) => state.lastAutoRefreshedAccountId,
   );
+  const storeAccounts = useCodexAccountStore((state) => state.accounts);
+
+  const accountFileSequenceMap = useMemo(() => {
+    const map = new Map<string, string>();
+    storeAccounts.forEach((acc, idx) => {
+      map.set(acc.id, String(idx + 1).padStart(2, "0"));
+    });
+    return map;
+  }, [storeAccounts]);
 
   const lastRefreshedNormalAccountId = useMemo(() => {
     if (storeLastRefreshedId && storeLastRefreshedId !== overviewCurrentAccountId) {
@@ -608,6 +617,7 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
   
     const renderGridCards = (items: typeof filteredAccounts, groupKey?: string) =>
       items.map((account) => {
+        const sequenceText = accountFileSequenceMap.get(account.id) ?? "01";
         const presentation = resolvePresentation(account);
         const meta = resolveAccountMeta(account);
         const isCurrent = overviewCurrentAccountId === account.id;
@@ -1130,6 +1140,12 @@ export function useCodexAccountsRenderers(context: Pick<ReturnType<typeof useCod
               {renderAccountSpeedSelect(account)}
               <div className="card-footer">
                 <div className="card-actions">
+                  <span
+                    className="card-action-seq-badge"
+                    title={`#${sequenceText}`}
+                  >
+                    {sequenceText}
+                  </span>
                   <button
                     className="card-action-btn"
                     onClick={() => void handleLaunchCodexCli(account)}

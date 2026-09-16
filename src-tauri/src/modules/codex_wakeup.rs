@@ -2131,6 +2131,34 @@ pub fn add_history_items(new_items: Vec<CodexWakeupHistoryItem>) -> Result<(), S
     save_json_atomic(&history_path()?, &merged)
 }
 
+pub fn update_history_item_quota_after(
+    item_id: &str,
+    quota_after: Option<CodexQuotaSnapshot>,
+    error: Option<String>,
+) -> Result<(), String> {
+    let _lock = HISTORY_LOCK
+        .lock()
+        .map_err(|_| "获取 Codex 唤醒历史锁失败")?;
+    let mut history = load_history().unwrap_or_default();
+    let mut found = false;
+    for item in &mut history {
+        if item.id == item_id {
+            if quota_after.is_some() {
+                item.quota_after = quota_after;
+            }
+            if error.is_some() {
+                item.quota_refresh_error = error;
+            }
+            found = true;
+            break;
+        }
+    }
+    if found {
+        save_json_atomic(&history_path()?, &history)?;
+    }
+    Ok(())
+}
+
 pub fn clear_history() -> Result<(), String> {
     let _lock = HISTORY_LOCK
         .lock()
@@ -2530,12 +2558,14 @@ fn create_cancelled_record(
 }
 
 async fn run_single_account(
+    app: Option<&AppHandle>,
     run_id: &str,
     context: &TaskRunContext,
     account_id: &str,
     prompt: &str,
     execution_config: &CodexWakeupExecutionConfig,
     cancel_flag: Option<&Arc<AtomicBool>>,
+    batch_index: usize,
 ) -> CodexWakeupHistoryItem {
     let prompt_value = Some(prompt.to_string());
     if is_scope_cancelled(cancel_flag) {
@@ -2608,21 +2638,51 @@ async fn run_single_account(
             }
             let account_context_text = resolve_account_context_text(&output.account);
             let account_email = output.account.email;
+            let item_id = uuid::Uuid::new_v4().to_string();
 
-            let (quota_after, quota_refresh_error) =
-                match crate::modules::codex_quota::refresh_account_quota(account_id).await {
-                    Ok(quota) => (Some(CodexQuotaSnapshot::from(&quota)), None),
+            // 延后 100 秒异步刷新配额（错峰：基准 100s + batch_index * 2s）
+            let delay_secs = 100 + (batch_index as u64) * 2;
+            let target_account_id = account_id.to_string();
+            let target_item_id = item_id.clone();
+            let app_handle = app.cloned();
+
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(tokio::time::Duration::from_secs(delay_secs)).await;
+                // 防悬空检查：确保账号在延迟等待期间未被删除
+                if crate::modules::codex_account::load_account(&target_account_id).is_none() {
+                    logger::log_info(&format!(
+                        "[CodexWakeup] 延后刷新跳过：账号已不存在 account_id={}",
+                        target_account_id
+                    ));
+                    return;
+                }
+                match crate::modules::codex_quota::refresh_account_quota(&target_account_id).await {
+                    Ok(quota) => {
+                        logger::log_info(&format!(
+                            "[CodexWakeup] 延后 {} 秒自动刷新配额成功: account_id={}",
+                            delay_secs, target_account_id
+                        ));
+                        let snapshot = CodexQuotaSnapshot::from(&quota);
+                        let _ = update_history_item_quota_after(&target_item_id, Some(snapshot), None);
+                        crate::modules::codex_quota::set_last_background_refreshed_account_id(Some(
+                            target_account_id,
+                        ));
+                        if let Some(ref app) = app_handle {
+                            let _ = app.emit("codex://accounts-changed", ());
+                        }
+                    }
                     Err(err) => {
                         logger::log_warn(&format!(
-                            "[CodexWakeup] 唤醒成功但刷新配额失败: account_id={}, error={}",
-                            account_id, err
+                            "[CodexWakeup] 延后 {} 秒自动刷新配额失败: account_id={}, error={}",
+                            delay_secs, target_account_id, err
                         ));
-                        (None, Some(err))
+                        let _ = update_history_item_quota_after(&target_item_id, None, Some(err));
                     }
-                };
+                }
+            });
 
             CodexWakeupHistoryItem {
-                id: uuid::Uuid::new_v4().to_string(),
+                id: item_id,
                 run_id: run_id.to_string(),
                 timestamp: now_ms(),
                 trigger_type: context.trigger_type.clone(),
@@ -2638,11 +2698,11 @@ async fn run_single_account(
                 model_reasoning_effort: execution_config.model_reasoning_effort.clone(),
                 reply: Some(output.reply),
                 error: None,
-                quota_refresh_error,
+                quota_refresh_error: None,
                 duration_ms: Some(output.duration_ms),
                 cli_path: None,
                 quota_before,
-                quota_after,
+                quota_after: None,
             }
         }
         Err(err) => {
@@ -2754,12 +2814,14 @@ pub async fn run_batch(
             None,
         );
         let record = run_single_account(
+            app,
             &run_id,
             &context,
             &account_id,
             &prompt,
             &execution_config,
             cancel_flag.as_ref(),
+            index,
         )
         .await;
         if record.success {
