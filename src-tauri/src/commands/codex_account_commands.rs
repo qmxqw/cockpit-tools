@@ -1857,31 +1857,57 @@ pub async fn refresh_codex_subscription_info(
 
 #[tauri::command]
 pub async fn refresh_current_codex_quota(app: AppHandle) -> Result<(), String> {
-    let Some(account) = codex_account::get_current_account() else {
-        return Err("未找到当前 Codex 账号".to_string());
-    };
-    if account.is_api_key_auth() {
-        return Ok(());
+    let mut target_account_ids: Vec<String> = Vec::new();
+
+    // 1. 当前激活账号
+    if let Some(account) = codex_account::get_current_account() {
+        if codex_quota::supports_quota_refresh(&account)
+            && codex_account::is_quota_refresh_enabled_for_account(&account.id)
+        {
+            target_account_ids.push(account.id);
+        }
     }
-    // 分组策略「不刷新」：自动当前号刷新静默跳过
-    if !codex_account::is_quota_refresh_enabled_for_account(&account.id) {
-        logger::log_info(&format!(
-            "[Codex Quota] 当前账号所属分组已关闭额度刷新，跳过: account_id={}",
-            account.id
-        ));
+
+    // 2. 近期被调用过服务的账号（自从上次刷新后产生过 API 调用）
+    // 归入当前激活账号高频刷新通道，由独立自定义刷新间隔控制，不受后台3小时及单账号约束
+    let last_serviced_at_ms_map =
+        crate::modules::codex_local_access::load_accounts_last_serviced_at_ms();
+    if !last_serviced_at_ms_map.is_empty() {
+        for account in codex_account::list_accounts() {
+            if target_account_ids.contains(&account.id) {
+                continue;
+            }
+            if !codex_quota::supports_quota_refresh(&account)
+                || !codex_account::is_quota_refresh_enabled_for_account(&account.id)
+            {
+                continue;
+            }
+            if let Some(&last_service_ms) = last_serviced_at_ms_map.get(&account.id) {
+                let usage_updated_at_ms = account.usage_updated_at.unwrap_or(0) * 1000;
+                if last_service_ms >= usage_updated_at_ms {
+                    target_account_ids.push(account.id);
+                }
+            }
+        }
+    }
+
+    if target_account_ids.is_empty() {
         return Ok(());
     }
 
-    let result = Box::pin(codex_quota::refresh_account_quota(&account.id)).await;
-    if result.is_ok() {
+    let mut success_count = 0;
+    for account_id in &target_account_ids {
+        if Box::pin(codex_quota::refresh_account_quota(account_id)).await.is_ok() {
+            success_count += 1;
+        }
+    }
+
+    if success_count > 0 {
         Box::pin(run_codex_post_refresh_checks(&app)).await;
         let _ = crate::modules::tray::update_tray_menu(&app);
-        Ok(())
-    } else {
-        Err(result
-            .err()
-            .unwrap_or_else(|| "刷新 Codex 配额失败".to_string()))
     }
+
+    Ok(())
 }
 
 /// 刷新所有账号配额

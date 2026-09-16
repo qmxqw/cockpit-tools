@@ -506,9 +506,6 @@ export function useAutoRefresh() {
                 if (!useCodexAccountStore.getState().currentAccount?.id) {
                   await fetchCurrentCodexAccount();
                 }
-                if (!useCodexAccountStore.getState().currentAccount?.id) {
-                  return;
-                }
                 try {
                   await invoke('refresh_current_codex_quota');
                   await fetchCodexAccounts();

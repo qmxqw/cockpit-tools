@@ -1345,8 +1345,8 @@ function MainApp() {
   const openUpdateNotification = useCallback((source: UpdateCheckSource) => {
     if (source === 'manual') {
       window.dispatchEvent(new CustomEvent('update-check-started', { detail: { source } }));
+      openUpdateNotificationDetails();
     }
-    openUpdateNotificationDetails();
   }, [openUpdateNotificationDetails]);
 
   const closeUpdateNotification = useCallback(() => {
@@ -1366,15 +1366,15 @@ function MainApp() {
 
   const openAutomaticUpdatePrompt = useCallback((
     version: string,
-    mode: RemoteUpdatePromptMode,
+    _mode: RemoteUpdatePromptMode,
   ) => {
-    if (mode !== 'popup' || autoPromptedUpdateVersionsRef.current.has(version)) {
+    if (autoPromptedUpdateVersionsRef.current.has(version)) {
       return;
     }
     autoPromptedUpdateVersionsRef.current.add(version);
-    openUpdateNotificationDetails();
-    writeUpdateLog('info', `远端更新策略已自动打开更新弹框: version=${version}`);
-  }, [openUpdateNotificationDetails, writeUpdateLog]);
+    // 彻底取消自动弹窗：不主动弹出窗口打扰用户，仅在界面侧栏/设置中保留更新状态
+    writeUpdateLog('info', `检测到新版本: version=${version}，已禁用自动弹窗，仅在界面保留更新入口`);
+  }, [writeUpdateLog]);
 
   const prepareCodexLocalAccessBeforeRelaunch = useCallback(async () => {
     setUpdateRetryStatus(
@@ -2362,11 +2362,11 @@ function MainApp() {
         const skippedVersion = (settings?.skipped_version ?? '').trim();
         const remoteConfigState = await fetchRemoteConfigState(false);
         const updatePromptMode = remoteConfigState.updatePromptMode;
-        const shouldAutoOpenUpdatePrompt = updatePromptMode === 'popup';
+        const shouldAutoOpenUpdatePrompt = false;
         setUpdateRemindersEnabled(remindOnUpdate);
         writeUpdateLog(
           'info',
-          `读取更新设置: auto_install=${autoInstall}, update_prompt_mode=${updatePromptMode}；启动始终执行更新检查`,
+          `读取更新设置: auto_install=${autoInstall}, update_prompt_mode=${updatePromptMode}；禁用自动弹窗提醒`,
         );
 
         writeUpdateLog('info', '启动检查立即执行');
