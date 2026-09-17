@@ -1319,3 +1319,45 @@ fn new_empty_local_access_collection() -> Result<CodexLocalAccessCollection, Str
         updated_at: now_ms(),
     })
 }
+
+pub async fn get_effective_serving_account_id() -> Option<String> {
+    let runtime = gateway_runtime().lock().await;
+    if !runtime.running {
+        return None;
+    }
+    if let Some(ref collection) = runtime.collection {
+        if !collection.enabled {
+            return None;
+        }
+        if let Some(ref bound_id) = collection.bound_oauth_account_id {
+            let trimmed = bound_id.trim();
+            if !trimmed.is_empty() {
+                return Some(trimmed.to_string());
+            }
+        }
+    }
+    runtime.active_serving_account_id.clone()
+}
+
+#[cfg(test)]
+pub fn try_get_effective_serving_account_id() -> Option<String> {
+    if let Ok(runtime) = gateway_runtime().try_lock() {
+        if !runtime.running {
+            return None;
+        }
+        if let Some(ref collection) = runtime.collection {
+            if !collection.enabled {
+                return None;
+            }
+            if let Some(ref bound_id) = collection.bound_oauth_account_id {
+                let trimmed = bound_id.trim();
+                if !trimmed.is_empty() {
+                    return Some(trimmed.to_string());
+                }
+            }
+        }
+        return runtime.active_serving_account_id.clone();
+    }
+    None
+}
+

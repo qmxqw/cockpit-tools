@@ -416,10 +416,16 @@ pub fn calculate_next_run_at(task: &codex_wakeup::CodexWakeupTask) -> Option<i64
         let today = now.date_naive();
         if is_loop_task_done_today(&spec, today) {
             let tomorrow = today + chrono::Duration::days(1);
+            let loop_default_minutes = 9 * 60 + 30; // 09:30
             let minutes = if task.schedule.kind == "daily" {
-                parse_time_to_minutes(task.schedule.daily_time.as_deref().unwrap_or("00:00")).unwrap_or(0)
+                task.schedule
+                    .daily_time
+                    .as_deref()
+                    .and_then(parse_time_to_minutes)
+                    .filter(|&m| m > 0)
+                    .unwrap_or(loop_default_minutes)
             } else {
-                0
+                loop_default_minutes
             };
             return build_local_datetime(tomorrow, minutes).map(|d| d.timestamp());
         } else {
