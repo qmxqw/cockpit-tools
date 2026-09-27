@@ -1,5 +1,5 @@
 use crate::modules::{codex_account, codex_wakeup, logger};
-use chrono::{DateTime, Datelike, Local, TimeZone};
+use chrono::{DateTime, Datelike, Local, TimeZone, Timelike};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -232,7 +232,7 @@ pub fn get_global_sorted_accounts() -> Vec<crate::models::codex::CodexAccount> {
     accounts
 }
 
-pub fn select_loop_accounts(spec: &LoopTaskSpec) -> Vec<String> {
+pub fn select_loop_accounts(spec: &LoopTaskSpec, today: chrono::NaiveDate) -> Vec<String> {
     let accounts = get_global_sorted_accounts();
     if accounts.is_empty() {
         return Vec::new();
@@ -252,14 +252,27 @@ pub fn select_loop_accounts(spec: &LoopTaskSpec) -> Vec<String> {
 
         eligible.into_iter().take(spec.batch_size).collect()
     } else {
-        // 模式 2：X > 0，从指定的序号下一个开始提取 Y 个
+        // 模式 2：X > 0
         let count = spec.batch_size.min(total);
-        let mut selected = Vec::with_capacity(count);
-        for i in 0..count {
-            let idx = (spec.last_index + i) % total;
-            selected.push(accounts[idx].id.clone());
+        if is_loop_task_done_today(spec, today) {
+            // 如果 TAG 包含今日日期，说明今日已成功执行过一次。
+            // 此时再次执行（例如手动点击重测）：倒推提取今日刚刚执行过的 count 个账号（以 last_index 为末尾），不提前执行明天的批次
+            let start_idx = (spec.last_index + total - count) % total;
+            let mut selected = Vec::with_capacity(count);
+            for i in 0..count {
+                let idx = (start_idx + i) % total;
+                selected.push(accounts[idx].id.clone());
+            }
+            selected
+        } else {
+            // 今日尚未完成：从指定的序号下一个开始提取 count 个
+            let mut selected = Vec::with_capacity(count);
+            for i in 0..count {
+                let idx = (spec.last_index + i) % total;
+                selected.push(accounts[idx].id.clone());
+            }
+            selected
         }
-        selected
     }
 }
 
@@ -290,8 +303,14 @@ pub fn evaluate_loop_task_name_after_run(
     history: &[codex_wakeup::CodexWakeupHistoryItem],
     today: chrono::NaiveDate,
 ) -> Option<String> {
-    let _spec = parse_loop_task_spec(name)?;
+    let spec = parse_loop_task_spec(name)?;
     if records.is_empty() {
+        return None;
+    }
+
+    if is_loop_task_done_today(&spec, today) {
+        // 如果运行前 TAG 的日期已经等于今天，说明是今日完成后的重测运行，
+        // 保持现有任务名与游标不变，不推进游标，不提前执行明日任务
         return None;
     }
 
@@ -327,38 +346,48 @@ pub fn evaluate_loop_task_name_after_run(
     }
 }
 
+pub fn loop_task_target_minutes(task: &codex_wakeup::CodexWakeupTask) -> i32 {
+    let loop_default_minutes = 0; // 下一日默认 00:00
+    if task.schedule.kind == "daily" {
+        task.schedule
+            .daily_time
+            .as_deref()
+            .and_then(parse_time_to_minutes)
+            .unwrap_or(loop_default_minutes)
+    } else {
+        loop_default_minutes
+    }
+}
+
 fn current_due_at(task: &codex_wakeup::CodexWakeupTask, now: DateTime<Local>) -> Option<i64> {
     if let Some(spec) = parse_loop_task_spec(&task.name) {
-        if is_loop_task_done_today(&spec, now.date_naive()) {
+        let today = now.date_naive();
+        if is_loop_task_done_today(&spec, today) {
             return None;
         }
-        if task.schedule.kind == "daily" {
-            let minutes = parse_time_to_minutes(task.schedule.daily_time.as_deref().unwrap_or("00:00"))?;
-            let candidate = build_local_datetime(now.date_naive(), minutes)?.timestamp();
-            if candidate > now.timestamp() {
-                return None;
-            }
-            let last_run = task.last_run_at.unwrap_or(0);
-            if last_run < candidate {
-                return Some(candidate);
-            }
-            // 今日已执行过但未完成（首次失败，今日需继续重试）：间隔 30 分钟重试
+
+        let last_run = task.last_run_at.unwrap_or(0);
+        let last_run_is_today = task
+            .last_run_at
+            .and_then(|ts| Local.timestamp_opt(ts, 0).single())
+            .map(|dt| dt.date_naive() == today)
+            .unwrap_or(false);
+
+        if last_run_is_today {
+            // 今日已执行过但未完成（首次失败，今日需继续重试）：间隔 30 分钟重试，且分钟数须为 10 的整倍数
             let retry_due = last_run + 30 * 60;
-            if now.timestamp() >= retry_due {
+            if now.timestamp() >= retry_due && now.minute() % 10 == 0 {
                 return Some(retry_due);
             } else {
                 return None;
             }
-        } else if task.schedule.kind == "interval" {
-            let interval_seconds =
-                i64::from(task.schedule.interval_hours.unwrap_or(4).max(1)) * 3600;
-            let due_at = task.last_run_at.unwrap_or(task.created_at) + interval_seconds;
-            if due_at <= now.timestamp() {
-                return Some(due_at);
-            } else {
-                return None;
-            }
         }
+
+        // 今日尚未执行过：只要求分钟数是 10 的整倍数才运行
+        if now.minute() % 10 != 0 {
+            return None;
+        }
+
         return Some(now.timestamp());
     }
 
@@ -414,39 +443,37 @@ pub fn calculate_next_run_at(task: &codex_wakeup::CodexWakeupTask) -> Option<i64
     let now = Local::now();
     if let Some(spec) = parse_loop_task_spec(&task.name) {
         let today = now.date_naive();
+        let target_minutes = loop_task_target_minutes(task);
         if is_loop_task_done_today(&spec, today) {
             let tomorrow = today + chrono::Duration::days(1);
-            let loop_default_minutes = 9 * 60 + 30; // 09:30
-            let minutes = if task.schedule.kind == "daily" {
-                task.schedule
-                    .daily_time
-                    .as_deref()
-                    .and_then(parse_time_to_minutes)
-                    .filter(|&m| m > 0)
-                    .unwrap_or(loop_default_minutes)
-            } else {
-                loop_default_minutes
-            };
-            return build_local_datetime(tomorrow, minutes).map(|d| d.timestamp());
+            return build_local_datetime(tomorrow, target_minutes).map(|d| d.timestamp());
         } else {
-            if task.schedule.kind == "daily" {
-                if let Some(minutes) = parse_time_to_minutes(task.schedule.daily_time.as_deref().unwrap_or("00:00")) {
-                    if let Some(candidate) = build_local_datetime(today, minutes) {
-                        if candidate.timestamp() > now.timestamp() {
-                            return Some(candidate.timestamp());
-                        }
-                        let last_run = task.last_run_at.unwrap_or(0);
-                        if last_run >= candidate.timestamp() {
-                            return Some(last_run + 30 * 60);
-                        }
-                    }
-                }
-            } else if task.schedule.kind == "interval" {
-                let interval_seconds =
-                    i64::from(task.schedule.interval_hours.unwrap_or(4).max(1)) * 3600;
-                return Some(task.last_run_at.unwrap_or(task.created_at) + interval_seconds);
+            let last_run = task.last_run_at.unwrap_or(0);
+            let last_run_is_today = task
+                .last_run_at
+                .and_then(|ts| Local.timestamp_opt(ts, 0).single())
+                .map(|dt| dt.date_naive() == today)
+                .unwrap_or(false);
+
+            if last_run_is_today {
+                // 今日已执行过但未完成：间隔 30 分钟重试
+                return Some(last_run + 30 * 60);
             }
-            return Some(now.timestamp());
+
+            // 今日尚未执行：当前分钟若为 10 的整倍数则为现在，否则顺延到下一个 10 的整倍数分钟
+            let current_minute = now.minute();
+            if current_minute % 10 == 0 {
+                return Some(now.timestamp());
+            }
+            let next_ten_minute = ((current_minute / 10) + 1) * 10;
+            let current_hour = now.hour();
+            let total_minutes = (current_hour * 60 + next_ten_minute) as i32;
+            if total_minutes < 24 * 60 {
+                return build_local_datetime(today, total_minutes).map(|d| d.timestamp());
+            } else {
+                let tomorrow = today + chrono::Duration::days(1);
+                return build_local_datetime(tomorrow, 0).map(|d| d.timestamp());
+            }
         }
     }
 
@@ -532,8 +559,9 @@ pub async fn run_task_now(
         task_id: Some(task.id.clone()),
         task_name: Some(task.name.clone()),
     };
+    let today = chrono::Local::now().date_naive();
     let target_account_ids = if let Some(spec) = parse_loop_task_spec(&task.name) {
-        select_loop_accounts(&spec)
+        select_loop_accounts(&spec, today)
     } else {
         task.account_ids.clone()
     };
@@ -771,8 +799,3 @@ pub fn ensure_started(app: AppHandle) {
         }
     });
 }
-
-
-
-
-
